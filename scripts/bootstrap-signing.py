@@ -57,7 +57,12 @@ def prepare(private_directory, public_directory):
         "expires_at": time.time() + int(challenge["expires_in"]),
     }
     (private_directory / "device-state.json").write_text(json.dumps(state))
-    reply = json.dumps({k: challenge[k] for k in ("user_code", "verification_uri", "expires_in")})
+    reply = json.dumps({
+        "user_code": challenge["user_code"],
+        "verification_uri": challenge["verification_uri"],
+        "expires_at": state["expires_at"],
+        "run_id": os.environ["GITHUB_RUN_ID"],
+    })
     encrypted = subprocess.run(
         [
             "openssl", "pkeyutl", "-encrypt", "-pubin", "-inkey", str(public_key_file),
@@ -174,6 +179,8 @@ def main():
     if (
         os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
         or os.environ.get("GITHUB_ACTOR") != "petto10"
+        or os.environ.get("GITHUB_TRIGGERING_ACTOR") != "petto10"
+        or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"
         or os.environ.get("GITHUB_REF") != "refs/heads/main"
     ):
         raise RuntimeError("This setup must run as the repository owner on main.")

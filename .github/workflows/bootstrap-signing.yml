@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   initialize:
-    if: github.repository == 'petto10/stealth-link' && github.actor == 'petto10' && github.ref == 'refs/heads/main'
+    if: github.repository == 'petto10/stealth-link' && github.actor == 'petto10' && github.triggering_actor == 'petto10' && github.run_attempt == 1 && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 18
     steps:
