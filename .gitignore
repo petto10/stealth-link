@@ -1,0 +1,39 @@
+# Gradle, Android SDK and editor state
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.idea/
+*.iml
+
+# Local keys, signing configuration and credentials
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.p8
+keystore.properties
+signing.properties
+.env
+.env.*
+
+# Binary build outputs and proprietary analysis inputs
+*.apk
+*.xapk
+*.apks
+*.aab
+*.dex
+*.smali
+apktool/
+jadx/
+decompiled/
+attachments/
+/work/
+/output/
+
+# Additional local signing material
+*.pkcs12
+*.jceks
+*.kdbx

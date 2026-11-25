@@ -1,0 +1,4 @@
+<resources>
+    <string name="companion_name" translatable="false">Stealth Link</string>
+    <style name="Theme.StealthCompanion" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>

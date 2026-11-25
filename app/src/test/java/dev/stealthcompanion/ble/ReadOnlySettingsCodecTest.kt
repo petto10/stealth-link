@@ -1,0 +1,68 @@
+package dev.stealthcompanion.ble
+
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Test
+
+class ReadOnlySettingsCodecTest {
+    private val empty = ReadOnlySettings()
+    private val activeSlot = SettingsQuery(SettingsQueryType.ACTIVE_SLOT)
+    private val system = SettingsQuery(SettingsQueryType.SYSTEM)
+
+    @Test
+    fun onlyDocumentedReadQueriesAreGeneratedWithChecksum() {
+        assertArrayEquals(bytes(0x11, 0xbb, 0, 0, 0, 0xcc), activeSlot.bytes())
+        assertArrayEquals(bytes(0xd1, 0x06, 0, 0, 0, 0xd7), system.bytes())
+        for (slot in 0..9) {
+            val name = SettingsQuery(SettingsQueryType.PROFILE_NAME, slot)
+            assertArrayEquals(bytes(0xd1, 0x09, slot, 0, 0, 0xda + slot), name.bytes())
+        }
+        assertThrows(IllegalArgumentException::class.java) { SettingsQuery(SettingsQueryType.PROFILE_NAME, 10) }
+        assertThrows(IllegalArgumentException::class.java) { SettingsQuery(SettingsQueryType.SYSTEM, 1) }
+    }
+
+    @Test
+    fun acceptsValidSlotAndRejectsWrongOpcodeStatusOrPosition() {
+        assertEquals(10, ReadOnlySettingsCodec.decode(activeSlot, bytes(0x11, 0xbb, 0, 9), empty)?.activeSlot)
+        assertNull(ReadOnlySettingsCodec.decode(activeSlot, bytes(0x11, 0xbb, 0), empty))
+        assertNull(ReadOnlySettingsCodec.decode(activeSlot, bytes(0x11, 0xbb, 0, 10), empty))
+        assertNull(ReadOnlySettingsCodec.decode(activeSlot, bytes(0x11, 0xbb, 1, 1), empty))
+        assertNull(ReadOnlySettingsCodec.decode(activeSlot, bytes(0x11, 0xaa, 0, 1), empty))
+    }
+
+    @Test
+    fun matchesProfileSlotAndReadsUtf8WithoutPadding() {
+        val query = SettingsQuery(SettingsQueryType.PROFILE_NAME, 3)
+        val frame = profileFrame(3, "Città 🎮".toByteArray(Charsets.UTF_8))
+        assertEquals(mapOf(4 to "Città 🎮"), ReadOnlySettingsCodec.decode(query, frame, empty)?.profiles)
+        assertNull(ReadOnlySettingsCodec.decode(query, profileFrame(2, "Wrong".toByteArray()), empty))
+        assertNull(ReadOnlySettingsCodec.decode(query, frame.copyOfRange(0, 20), empty))
+    }
+
+    @Test
+    fun excludesFinalByteOfProfileFrameAndRejectsMalformedUtf8() {
+        val query = SettingsQuery(SettingsQueryType.PROFILE_NAME, 0)
+        val frame = profileFrame(0, "1234567890abcdef".toByteArray())
+        frame[20] = 71
+        assertEquals(mapOf(1 to "1234567890abcdef"), ReadOnlySettingsCodec.decode(query, frame, empty)?.profiles)
+        assertNull(ReadOnlySettingsCodec.decode(query, profileFrame(0, bytes(0xf0, 0x9f)), empty))
+    }
+
+    @Test
+    fun readsUnsignedSystemFieldsAndPreservesOtherResults() {
+        val previous = ReadOnlySettings(activeSlot = 2, profiles = mapOf(2 to "Sample"))
+        val frame = bytes(0xd1, 0x06, 0, 3, 5, 120, 2, 200, 8)
+        val expected = previous.copy(system = ReadOnlySystem(3, 5, 12, 2, 200, 8))
+        assertEquals(expected, ReadOnlySettingsCodec.decode(system, frame, previous))
+        assertNull(ReadOnlySettingsCodec.decode(system, frame.copyOfRange(0, 8), previous))
+    }
+
+    private fun profileFrame(slot: Int, name: ByteArray): ByteArray = ByteArray(21).apply {
+        bytes(0xd1, 0x09, 0, slot).copyInto(this)
+        name.copyInto(this, 4)
+    }
+
+    private fun bytes(vararg values: Int) = values.map(Int::toByte).toByteArray()
+}

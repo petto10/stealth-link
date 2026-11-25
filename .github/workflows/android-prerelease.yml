@@ -1,0 +1,113 @@
+name: Android prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing prerelease tag on main (for example v0.1.0-alpha)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-prerelease
+  cancel-in-progress: false
+
+jobs:
+  build-and-sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate and check out tag
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)(\.[0-9]+)?$ ]]; then
+            echo "Expected a version tag such as v0.1.0-alpha." >&2
+            exit 1
+          fi
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          git merge-base --is-ancestor "refs/tags/$RELEASE_TAG" HEAD
+          git checkout --detach "refs/tags/$RELEASE_TAG"
+
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK packages
+        run: sdkmanager --install 'platforms;android-36' 'build-tools;35.0.0'
+
+      - name: Verify code and build unsigned release
+        run: ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:lintDebug :app:lintRelease :app:assembleRelease
+
+      - name: Verify package and version and sign APK
+        env:
+          ANDROID_SIGNING_KEYSTORE_B64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_B64 }}
+          ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+          ANDROID_SIGNING_CERT_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
+        run: |
+          : "${ANDROID_SIGNING_KEYSTORE_B64:?Missing signing keystore secret}"
+          umask 077
+          export ANDROID_SIGNING_KEYSTORE
+          ANDROID_SIGNING_KEYSTORE=$(mktemp "$RUNNER_TEMP/stealth-link.XXXXXXXX.p12")
+          trap 'rm -f -- "$ANDROID_SIGNING_KEYSTORE"' EXIT
+          printf '%s' "$ANDROID_SIGNING_KEYSTORE_B64" | base64 --decode > "$ANDROID_SIGNING_KEYSTORE"
+          unset ANDROID_SIGNING_KEYSTORE_B64
+
+          apk=app/build/outputs/apk/release/app-release-unsigned.apk
+          badging=$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk")
+          package_line=${badging%%$'\n'*}
+          [[ "$package_line" == "package: name='dev.stealthcompanion' "* ]]
+          [[ "$package_line" == *"versionName='${RELEASE_TAG#v}' "* ]]
+          ./scripts/sign-release-apk.sh "$apk" "release-assets/stealth-link-${RELEASE_TAG#v}.apk"
+
+      - name: Prepare release files
+        run: |
+          cp docs/prove-telefono.md release-assets/guida-prove-telefono.md
+          if [[ -f "docs/releases/$RELEASE_TAG.md" ]]; then
+            cp "docs/releases/$RELEASE_TAG.md" release-assets/release-notes.md
+          else
+            printf '# Stealth Link %s\n\nPrerelease Android. Consulta la guida allegata per le prove sul controller.\n' "$RELEASE_TAG" > release-assets/release-notes.md
+          fi
+          cd release-assets
+          sha256sum "stealth-link-${RELEASE_TAG#v}.apk" guida-prove-telefono.md > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-prerelease-assets
+          path: release-assets/
+          if-no-files-found: error
+
+  publish:
+    needs: build-and-sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signed-prerelease-assets
+          path: release-assets
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release-assets
+          sha256sum -c SHA256SUMS.txt
+          gh release create "$RELEASE_TAG" \
+            "stealth-link-${RELEASE_TAG#v}.apk" SHA256SUMS.txt guida-prove-telefono.md \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
+            --title "Stealth Link $RELEASE_TAG" --notes-file release-notes.md

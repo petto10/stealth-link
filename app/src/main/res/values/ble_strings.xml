@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ble_service_channel">Controller connection</string>
+    <string name="ble_service_description">Bluetooth session is active</string>
+    <string name="ble_service_stop">Disconnect</string>
+</resources>

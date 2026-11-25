@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ble_service_channel">Connessione al controller</string>
+    <string name="ble_service_description">Sessione Bluetooth attiva</string>
+    <string name="ble_service_stop">Disconnetti</string>
+</resources>
