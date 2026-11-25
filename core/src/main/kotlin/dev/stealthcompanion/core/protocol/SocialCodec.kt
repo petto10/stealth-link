@@ -3,9 +3,8 @@ package dev.stealthcompanion.core.protocol
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
-import java.text.BreakIterator
-import java.util.Locale
 import java.util.UUID
+import java.util.regex.Pattern
 
 enum class SocialEventId(val id: Int) {
     ADDED(0), MODIFIED(1), REMOVED(2),
@@ -69,6 +68,7 @@ object SocialCodec {
     private const val RESPONSE_HEADER_SIZE = 5
     private const val MAX_GATT_VALUE = 512
     private const val MAX_IDENTIFIER_BYTES = 128
+    private val grapheme = Pattern.compile("\\X")
 
     fun encodeEvent(event: SocialEvent): ByteArray {
         require(event.flags in 0..255 && event.category in 0..255 && event.categoryCount in 0..255)
@@ -126,7 +126,7 @@ object SocialCodec {
         mtu: Int,
         options: ProtocolOptions = ProtocolOptions(),
     ): List<ByteArray> {
-        val frameLimit = mtuValueLimit(mtu) ?: return emptyList()
+        val frameLimit = notificationValueLimit(mtu) ?: return emptyList()
         if (request.attributes.isEmpty() || request.attributes.distinctBy { it.attribute } != request.attributes ||
             (!options.allowMultipleAttributes && request.attributes.size != 1)) return emptyList()
         val limit = if (options.allowFragmentation) options.maxAttributeBytes else options.maxAttributeBytes.coerceAtMost(255)
@@ -165,6 +165,7 @@ object SocialCodec {
             stream.writeLittleEndian(bytes.size, 2)
             stream.write(bytes)
         }
+        // ANCS splits one logical response. Only its first ATT value starts with the command and UID.
         return splitFrames(stream.toByteArray(), frameLimit)
     }
 
@@ -196,7 +197,7 @@ object SocialCodec {
     }
 
     internal fun encodeAppName(identifier: String, name: String, mtu: Int, options: ProtocolOptions): List<ByteArray> {
-        val frameLimit = mtuValueLimit(mtu) ?: return emptyList()
+        val frameLimit = notificationValueLimit(mtu) ?: return emptyList()
         val identifierBytes = identifier.toByteArray(Charsets.UTF_8)
         val headerSize = identifierBytes.size + 5
         val budget = if (options.allowFragmentation) options.maxAttributeBytes else frameLimit - headerSize
@@ -213,7 +214,8 @@ object SocialCodec {
         return splitFrames(response, frameLimit)
     }
 
-    private fun mtuValueLimit(mtu: Int): Int? =
+    /** ATT Handle Value Notification consumes one opcode byte and two attribute handle bytes. */
+    fun notificationValueLimit(mtu: Int): Int? =
         mtu.takeIf { it in DEFAULT_MTU..517 }?.let { (it - 3).coerceAtMost(MAX_GATT_VALUE) }
 
     private fun splitFrames(bytes: ByteArray, maximum: Int): List<ByteArray> =
@@ -239,22 +241,17 @@ object SocialCodec {
         null
     }
 
-    /** Encode a bounded prefix without splitting a Unicode character boundary. */
+    /** Encode a bounded prefix without splitting extended grapheme clusters. */
     fun encodeUtf8Within(value: String, maximumBytes: Int): ByteArray {
         if (maximumBytes <= 0 || value.isEmpty()) return ByteArray(0)
-        val characters = BreakIterator.getCharacterInstance(Locale.ROOT)
-        characters.setText(value)
+        val characters = grapheme.matcher(value)
         val result = ByteArrayOutputStream(minOf(maximumBytes, 512))
-        var start = characters.first()
-        var end = characters.next()
-        while (end != BreakIterator.DONE) {
+        while (characters.find()) {
             // UTF-8 encoding needs at least as many bytes as the number of UTF-16 units.
-            if (end - start > maximumBytes - result.size()) break
-            val segment = value.substring(start, end).toByteArray(Charsets.UTF_8)
+            if (characters.end() - characters.start() > maximumBytes - result.size()) break
+            val segment = characters.group().toByteArray(Charsets.UTF_8)
             if (segment.size > maximumBytes - result.size()) break
             result.write(segment)
-            start = end
-            end = characters.next()
         }
         return result.toByteArray()
     }

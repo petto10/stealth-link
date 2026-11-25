@@ -48,7 +48,7 @@ class SocialPolicyTest {
     fun contactFilterUsesNormalizedLabelsAndExplicitId() {
         val notification = source.copy(sender = "Andre\u0301a", contactId = "contact:42")
         val rule = allowed.copy(allowedContacts = setOf("ANDRÉA"))
-        assertEquals("Andréa: Ciao", SocialPolicy.render(notification, rule)?.body)
+        assertEquals("Ciao — Andréa", SocialPolicy.render(notification, rule)?.body)
         assertNull(SocialPolicy.render(notification, rule.copy(blockedContacts = setOf("contact:42"))))
         assertNull(SocialPolicy.render(source, rule))
     }
@@ -66,10 +66,9 @@ class SocialPolicyTest {
                 latest,
             ),
         )
-        assertEquals(
-            SocialMessage("note", "Gruppo · Esempio", "Pronti? 🏁 — Gabriella\nVoilà — Ada\nPrima — Zoe", source.packageName),
-            SocialPolicy.render(notification, allowed.copy(blockedContacts = setOf("blocked"))),
-        )
+        val compact = SocialPolicy.render(notification, allowed.copy(blockedContacts = setOf("blocked")))
+        assertEquals("Gruppo · Esempio", compact?.title)
+        assertEquals("Pronti? 🏁 — Gabriella", compact?.body)
         assertNull(SocialPolicy.render(notification, allowed.copy(allowedContacts = setOf("elsewhere"))))
     }
 
@@ -79,7 +78,25 @@ class SocialPolicyTest {
             conversation = "Gruppo",
             messages = (5 downTo 1).map { ConversationMessage(null, "Msg $it", it.toLong()) },
         )
-        assertEquals("Msg 5\nMsg 4\nMsg 3", SocialPolicy.render(notification, allowed)?.body)
+        assertEquals("Msg 5\nMsg 4\nMsg 3", SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)?.body)
+    }
+
+    @Test
+    fun explicitMessageIdentitySuppressesRepeatedCopiesButPreservesEdits() {
+        val note = ConversationMessage("Ada", "Prima", 1, messageId = "message-1")
+        val notification = source.copy(messages = listOf(note, note, note.copy(text = "Modificata", timestamp = 2)))
+        val message = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
+        assertEquals("Ada · Esempio", message?.title)
+        assertEquals("Modificata\nPrima", message?.body)
+        assertEquals(2, message?.conversationUpdate?.entries?.size)
+    }
+
+    @Test
+    fun bodyOnlyCanHideTheApplicationNameWithLocalizedTitleFallback() {
+        val notification = source.copy(title = null, text = "Ciao")
+        val rendered = SocialPolicy.render(notification, allowed.copy(includeAppName = false), privateText = "Avviso")
+        assertEquals("Avviso", rendered?.title)
+        assertEquals("Ciao", rendered?.body)
     }
 
     @Test

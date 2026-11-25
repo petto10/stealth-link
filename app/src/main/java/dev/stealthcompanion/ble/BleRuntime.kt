@@ -42,6 +42,8 @@ object BleRuntime {
         syntheticOnlyUnencrypted: Boolean = false,
     ) = controller.setProbeOptions(options, syntheticOnlyUnencrypted)
 
+    fun setLongTextEnabled(enabled: Boolean) = controller.setLongTextEnabled(enabled)
+
     suspend fun send(
         key: String,
         title: String,
@@ -49,7 +51,9 @@ object BleRuntime {
         packageName: String? = null,
         synthetic: Boolean = false,
         category: Int = 4,
-    ): Boolean = controller.send(key, title, text, packageName, synthetic, category)
+        applicationName: String? = null,
+        longTextOverride: Boolean? = null,
+    ): Boolean = controller.send(key, title, text, packageName, synthetic, category, applicationName, longTextOverride)
 
     suspend fun remove(key: String): Boolean = controller.remove(key)
 
@@ -58,18 +62,42 @@ object BleRuntime {
     fun refreshSettings() = controller.refreshSettings()
 
     fun exportDiagnostics(): String = buildString {
-        appendLine("Stealth Link BLE diagnostics v1")
-        appendLine("phase=${state.value.phase.name}")
-        appendLine("social_ready=${state.value.socialReady}")
-        appendLine("encrypted_subscription_required=${state.value.encryptedByPolicy}")
-        appendLine("mtu=${state.value.mtu}")
-        appendLine("settings_connected=${state.value.settingsConnected}")
-        appendLine("synthetic_only=${state.value.syntheticOnly}")
+        val current = state.value
+        appendLine("Stealth Link BLE diagnostics v2")
+        appendLine("phase=${current.phase.name}")
+        appendLine("social_ready=${current.socialReady}")
+        appendLine("encrypted_subscription_required=${current.encryptedByPolicy}")
+        appendLine("social_mtu=${current.mtu}")
+        appendLine("social_mtu_source=${if (current.socialMtuKnown) "server_callback" else "att_default"}")
+        appendLine("configuration_client_mtu=${current.clientMtu ?: "unknown"}")
+        appendLine("same_selected_peer=${current.samePeerForMtu}")
+        appendLine("settings_connected=${current.settingsConnected}")
+        appendLine("synthetic_only=${current.syntheticOnly}")
+        appendLine("long_text_enabled=${current.longTextEnabled}")
+        appendLine("attribute_requests=${current.attributeRequests}")
+        appendLine("data_frames_sent=${current.fragmentsSent}")
+        appendLine("last_requested_title_bytes=${current.lastRequestedTitleBytes ?: "unknown"}")
+        appendLine("last_requested_body_bytes=${current.lastRequestedBodyBytes ?: "unknown"}")
+        appendLine("last_sent_title_bytes=${current.lastSentTitleBytes ?: "unknown"}")
+        appendLine("last_sent_body_bytes=${current.lastSentBodyBytes ?: "unknown"}")
         diagnostics.value.forEach { entry ->
             append(entry.elapsedMs)
             append("ms ")
             append(entry.event.name)
-            entry.status?.let { append(" ($it)") }
+            entry.status?.let { append(" status=$it") }
+            entry.cause?.let { append(" cause=${it.name}") }
+            entry.responseNumber?.let { append(" response=$it") }
+            entry.command?.let { append(" command=$it") }
+            if (entry.attributes.isNotEmpty()) {
+                append(" attributes=")
+                append(entry.attributes.joinToString(",") { attribute ->
+                    "${attribute.id}/${attribute.requestedMaxBytes ?: "-"}/${attribute.payloadBytes ?: "-"}"
+                })
+            }
+            if (entry.frameBytes.isNotEmpty()) {
+                append(" frame_bytes=")
+                append(entry.frameBytes.joinToString(","))
+            }
             appendLine()
         }
     }

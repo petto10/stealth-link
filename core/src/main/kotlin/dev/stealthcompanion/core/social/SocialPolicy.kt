@@ -8,6 +8,7 @@ data class ConversationMessage(
     val text: String,
     val timestamp: Long,
     val contactId: String? = null,
+    val messageId: String? = null,
 )
 
 data class IncomingNotification(
@@ -46,10 +47,38 @@ data class SocialMessage(
     val title: String,
     val body: String,
     val packageName: String? = null,
+    val conversationUpdate: ConversationUpdate? = null,
+    val deliveryKey: String = key,
+) {
+    internal fun renderConversation(entries: List<ConversationEntry>): SocialMessage {
+        val update = requireNotNull(conversationUpdate).copy(entries = entries)
+        val subject = update.conversation ?: entries.last().sender ?: update.fallbackTitle
+        val title = formatTitle(subject, update.app, update.fallbackText)
+        val body = entries.takeLast(update.format.historyLines).asReversed().joinToString("\n") { entry ->
+            formatBody(entry.text, entry.sender?.takeUnless { it == subject })
+        }
+        return copy(title = title, body = body, conversationUpdate = update)
+    }
+}
+
+enum class SocialFormat(internal val historyLines: Int) {
+    COMPACT(1), EXTENDED(3),
+}
+
+class ConversationEntry internal constructor(val identity: String, val sender: String?, val text: String)
+
+@ConsistentCopyVisibility
+data class ConversationUpdate internal constructor(
+    val entries: List<ConversationEntry>,
+    val conversation: String?,
+    val fallbackTitle: String?,
+    val app: String?,
+    val format: SocialFormat,
+    val fallbackText: String,
 )
 
 object SocialPolicy {
-    private const val MAX_MESSAGES = 3
+    private const val MAX_MESSAGE_WINDOW = 24
     private val whitespace = Regex("[\\p{Z}\\s]+")
 
     fun render(
@@ -58,6 +87,7 @@ object SocialPolicy {
         locked: Boolean = false,
         privateWhenLocked: Boolean = true,
         privateText: String = "New notification",
+        format: SocialFormat = SocialFormat.COMPACT,
     ): SocialMessage? {
         if (!rule.enabled || input.sensitive || input.groupSummary) return null
         if ((input.silent && !rule.allowSilent) || (input.ongoing && !rule.allowOngoing)) return null
@@ -66,7 +96,7 @@ object SocialPolicy {
             return null
         }
 
-        val app = clean(input.appName) ?: clean(input.packageName) ?: privateText
+        val app = (clean(input.appName) ?: clean(input.packageName))?.takeIf { rule.includeAppName }
         val conversation = clean(input.conversation)
         val sender = clean(input.sender)
         val title = clean(input.title)
@@ -75,36 +105,45 @@ object SocialPolicy {
             .filter { message ->
                 matchesRule(message.sender, message.contactId, rule.allowedContacts, rule.blockedContacts)
             }
-            .distinct()
             .sortedBy(ConversationMessage::timestamp)
             .toList()
-            .takeLast(MAX_MESSAGES)
         if (input.messages.isNotEmpty() && messages.isEmpty()) return null
         if (input.messages.isEmpty() && !matchesRule(sender, input.contactId, rule.allowedContacts, rule.blockedContacts)) {
             return null
         }
 
         if (locked && privateWhenLocked) {
-            return SocialMessage(input.key, app.takeIf { rule.includeAppName } ?: privateText, privateText, input.packageName)
+            return SocialMessage(input.key, app ?: privateText, privateText, input.packageName)
         }
 
-        val subject = conversation ?: messages.lastOrNull()?.sender ?: title ?: sender
-        val displayTitle = when {
-            subject == null -> app
-            rule.includeAppName && subject != app -> "$subject · $app"
-            else -> subject
+        if (messages.isNotEmpty()) {
+            val entries = conversationEntries(messages)
+            val update = ConversationUpdate(entries, conversation, title ?: sender, app, format, privateText)
+            return SocialMessage(input.key, "", "", input.packageName, update).renderConversation(entries)
         }
-        val body = if (messages.isEmpty()) {
-            val text = clean(input.text)
-            if (text != null && sender != null && sender != subject) "$sender: $text" else text
-        } else {
-            // The display may truncate the field after a few bytes. Keep the latest text up front.
-            messages.asReversed().joinToString("\n") { message ->
-                message.sender?.takeUnless { it == subject }?.let { "${message.text} — $it" } ?: message.text
+
+        val subject = conversation ?: title ?: sender
+        val text = clean(input.text)
+        if (subject == null && text == null) return null
+        val body = text?.let { formatBody(it, sender?.takeUnless { it == subject }) }.orEmpty()
+        return SocialMessage(input.key, formatTitle(subject, app, privateText), body, input.packageName)
+    }
+
+    private fun conversationEntries(messages: List<ConversationMessage>): List<ConversationEntry> {
+        val occurrences = mutableMapOf<String, Int>()
+        return messages.mapNotNull { message ->
+            val stableId = message.messageId?.takeIf { it.isNotBlank() }
+            val author = message.contactId?.takeIf { it.isNotBlank() } ?: normalizeLabel(message.sender).orEmpty()
+            val base = if (stableId == null) {
+                socialDigest("inferred", author, message.timestamp.toString(), message.text)
+            } else {
+                socialDigest("explicit", stableId, message.text)
             }
-        }
-        if (subject == null && body == null) return null
-        return SocialMessage(input.key, displayTitle, body.orEmpty(), input.packageName)
+            val occurrence = occurrences.getOrDefault(base, 0) + 1
+            occurrences[base] = occurrence
+            if (stableId != null && occurrence > 1) null
+            else ConversationEntry("$base:$occurrence", message.sender, message.text)
+        }.takeLast(MAX_MESSAGE_WINDOW)
     }
 
     private fun matchesRule(label: String?, id: String?, allowed: Set<String>, blocked: Set<String>): Boolean {
@@ -124,3 +163,12 @@ object SocialPolicy {
         return Normalizer.normalize(text, Normalizer.Form.NFC).takeIf(String::isNotEmpty)
     }
 }
+
+private fun formatTitle(subject: String?, app: String?, fallback: String): String = when {
+    subject == null -> app ?: fallback
+    app != null && !subject.equals(app, ignoreCase = true) -> "$subject · $app"
+    else -> subject
+}
+
+private fun formatBody(text: String, sender: String?): String =
+    if (sender == null) text else "$text — $sender"

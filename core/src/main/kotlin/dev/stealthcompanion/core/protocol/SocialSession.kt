@@ -19,23 +19,32 @@ class SocialSession(
         val payload: SocialPayload,
         val event: SocialEvent,
         val createdAt: Long,
+        val allowLongResponse: Boolean,
     )
 
     private val records = LinkedHashMap<Int, Record>()
     private val legacyIssuedAt = arrayOfNulls<Long>(256)
+    private val longResponseOptions = options.copy(
+        allowFragmentation = true,
+        allowMultipleAttributes = true,
+        maxAttributeBytes = if (options.allowFragmentation) options.maxAttributeBytes else 1024,
+    )
     private var sequence = 0
 
+    /** The long response preference is captured per record without changing its event format or UID. */
     fun publish(
         key: String,
         payload: SocialPayload,
         nowMs: Long,
         category: Int = SocialCodec.SOCIAL_CATEGORY,
+        allowLongResponse: Boolean = false,
     ): ByteArray? {
         require(category in 0..11)
         expire(nowMs)
         val recordedCategory = if (options.allowCustomCategories) category else SocialCodec.SOCIAL_CATEGORY
         val existing = records.values.lastOrNull { it.key == key }
-        if (existing?.payload == payload && existing.event.category == recordedCategory) return null
+        if (existing?.payload == payload && existing.event.category == recordedCategory &&
+            existing.allowLongResponse == allowLongResponse) return null
         val event = if (existing != null && options.allowUpdates) {
             existing.event.copy(event = SocialEventId.MODIFIED, category = recordedCategory)
         } else {
@@ -49,7 +58,7 @@ class SocialSession(
         }
         records.remove(event.uid)
         if (records.size >= maxRecords) records.remove(records.keys.first())
-        records[event.uid] = Record(key, payload, event, nowMs)
+        records[event.uid] = Record(key, payload, event, nowMs, allowLongResponse)
         if (!options.useFullUid) legacyIssuedAt[event.uid ushr 24] = nowMs
         return SocialCodec.encodeEvent(event)
     }
@@ -76,7 +85,8 @@ class SocialSession(
         val parsed = SocialCodec.decodeRequest(request)
         if (parsed != null) {
             val record = records[parsed.uid] ?: return emptyList()
-            return SocialCodec.encodeResponse(parsed, record.payload, mtu, options)
+            val responseOptions = if (record.allowLongResponse) longResponseOptions else options
+            return SocialCodec.encodeResponse(parsed, record.payload, mtu, responseOptions)
         }
         if (!options.allowApplicationIdentifier) return emptyList()
         val identifier = SocialCodec.decodeAppIdentifier(request) ?: return emptyList()

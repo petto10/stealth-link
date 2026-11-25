@@ -26,6 +26,9 @@ internal class LocalPreferences(context: Context) {
     var privacyWhileLocked: Boolean
         get() = data.getBoolean("privacy", true)
         set(value) { data.edit { putBoolean("privacy", value) } }
+    var extendedText: Boolean
+        get() = data.getBoolean("extended_text", false)
+        set(value) { data.edit { putBoolean("extended_text", value) } }
     var configurationPeer: String?
         get() = data.getString("configuration_peer", null)
         set(value) = set("configuration_peer", value)

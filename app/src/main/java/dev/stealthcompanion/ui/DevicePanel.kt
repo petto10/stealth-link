@@ -79,7 +79,7 @@ internal fun DevicePanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
                 onAction(UiAction.SetPaused(it))
             }, R.string.pause_subtitle)
         }
-        DiagnosticsPanel(state.diagnostics) { onAction(UiAction.ExportDiagnostics) }
+        DiagnosticsPanel(state.diagnostics, state.mode) { onAction(UiAction.ExportDiagnostics) }
     }
 }
 
@@ -259,7 +259,7 @@ private fun ControllersPanel(state: StealthUiState, onAction: (UiAction) -> Unit
 }
 
 @Composable
-private fun DiagnosticsPanel(diagnostics: DiagnosticsUi, export: () -> Unit) {
+private fun DiagnosticsPanel(diagnostics: DiagnosticsUi, mode: CompanionMode, export: () -> Unit) {
     Panel {
         SectionTitle(R.string.diagnostic_title)
         BodyNote(R.string.diagnostic_subtitle)
@@ -271,7 +271,8 @@ private fun DiagnosticsPanel(diagnostics: DiagnosticsUi, export: () -> Unit) {
             Metric(R.string.metric_dropped, diagnostics.dropped, Modifier.weight(1f))
             Metric(R.string.metric_reconnects, diagnostics.reconnects, Modifier.weight(1f))
         }
-        diagnostics.mtu?.let { BodyNote(stringResource(R.string.diagnostic_mtu, it)) }
+        HorizontalDivider()
+        TransportReadout(diagnostics, mode)
         OutlinedButton(onClick = export) { Text(stringResource(R.string.diagnostic_export)) }
     }
 }

@@ -23,8 +23,9 @@ class ControllerSimulator(
     private val reverseOrder: Boolean = false,
     private val feedCapacity: Int = 8,
 ) {
+    private val frameLimit = requireNotNull(SocialCodec.notificationValueLimit(mtu))
+
     init {
-        require(mtu in 23..517)
         require(requestedTitleBytes in 0..65535 && requestedMessageBytes in 0..65535)
         require(feedCapacity > 0)
     }
@@ -54,7 +55,7 @@ class ControllerSimulator(
         for (attributes in requests) {
             val request = SocialCodec.encodeRequest(AttributeRequest(event.uid, attributes))
             val packets = respond(request, mtu)
-            if (packets.isEmpty() || packets.any { it.isEmpty() || it.size > minOf(mtu - 3, 512) }) return null
+            if (packets.isEmpty() || packets.any { it.isEmpty() || it.size > frameLimit }) return null
             val data = ByteArrayOutputStream()
             packets.forEach { data.write(it) }
             val answer = SocialCodec.decodeResponse(data.toByteArray()) ?: return null

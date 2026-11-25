@@ -47,7 +47,6 @@
     <string name="diagnostic_title">Diagnostica Bluetooth</string>
     <string name="diagnostic_subtitle">Esporta contatori, stati della connessione ed errori di trasporto. Il file esclude il testo delle notifiche e gli indirizzi Bluetooth.</string>
     <string name="diagnostic_export">Esporta diagnostica</string>
-    <string name="diagnostic_mtu">MTU negoziato %1$d</string>
     <string name="notifications_title">Scegli cosa arriva al display</string>
     <string name="notifications_intro">Abilita le app una alla volta. Personalizza l’inoltro per canale, contatto o conversazione.</string>
     <string name="privacy_locked">Riservatezza a telefono bloccato</string>
@@ -75,7 +74,7 @@
     <string name="action_remove">Rimuovi</string>
     <string name="lab_title">Prova il display</string>
     <string name="lab_intro">Invia contenuti sintetici e registra cosa mostra effettivamente il controller.</string>
-    <string name="preview_label">Anteprima del display</string>
+    <string name="preview_label">Risultato del simulatore</string>
     <string name="preview_empty">Il messaggio di prova comparirà qui.</string>
     <string name="synthetic_title">Messaggio di prova</string>
     <string name="synthetic_title_field">Titolo</string>
@@ -152,4 +151,29 @@
     <string name="feedback_profiles_exported">Backup dei profili esportato.</string>
     <string name="feedback_diagnostics_exported">Diagnostica esportata.</string>
     <string name="feedback_file_error">Impossibile completare l’operazione sul file.</string>
+    <string name="diagnostic_sim_mtu">MTU del simulatore</string>
+    <string name="diagnostic_social_mtu">MTU Social negoziato</string>
+    <string name="diagnostic_default_mtu">MTU Social (valore ATT iniziale)</string>
+    <string name="diagnostic_config_mtu">MTU impostazioni</string>
+    <string name="diagnostic_requests">Richieste di attributi</string>
+    <string name="diagnostic_fragments">Frammenti Data Source inviati</string>
+    <string name="diagnostic_attribute_lengths">Ultime lunghezze degli attributi in byte</string>
+    <string name="diagnostic_attribute">Attributo</string>
+    <string name="diagnostic_attribute_requested">Massimo richiesto</string>
+    <string name="diagnostic_attribute_sent">Inviati</string>
+    <string name="extended_text">Testo esteso (sperimentale)</string>
+    <string name="extended_text_note">Consenti più frammenti per attributo per tutte le notifiche. Verifica la ricomposizione sul tuo controller prima di attivare questa opzione.</string>
+    <string name="lab_simulator_intro">Confronta le dimensioni dei messaggi, prova gli eventi e leggi il testo decodificato dal simulatore.</string>
+    <string name="simulator_tests">Prove del protocollo</string>
+    <string name="probes_simulator_note">Scegli un MTU per confrontare le risposte a frammento singolo e quelle frammentate.</string>
+    <string name="simulator_mtu_title">MTU ATT simulato</string>
+    <string name="probe_simulated_payload">Controlla il messaggio decodificato dal simulatore. Per osservare il comportamento del display serve il controller.</string>
+    <string name="probe_comparison_note">A e B inviano lo stesso campione. Confronta i byte e annota l’ultima sezione numerata visibile sul controller in ciascuna prova.</string>
+    <string name="probe_comparison_simulator">A e B inviano lo stesso campione. Confronta il numero di byte e il testo decodificato.</string>
+    <string name="probe_legacy">Invia A · Compatibilità</string>
+    <string name="probe_extended">Invia B · Con frammentazione</string>
+    <string name="probes_observations_note">Gli esiti registrano ciò che hai osservato sul controller durante una prova. Ripeti le prove se cambi dispositivo o firmware.</string>
+    <string name="preview_decoded_bytes">Byte decodificati · titolo %1$d · messaggio %2$d</string>
+    <string name="preview_expand">Mostra messaggio completo</string>
+    <string name="preview_collapse">Mostra meno</string>
 </resources>

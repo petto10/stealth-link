@@ -8,12 +8,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,8 +37,11 @@ internal fun LabPanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
     var title by remember(initialTitle) { mutableStateOf(initialTitle) }
     var body by remember(initialBody) { mutableStateOf(initialBody) }
     var selected by remember { mutableStateOf<DisplayCapability?>(null) }
-    Page(R.string.lab_title, R.string.lab_intro) {
-        DisplayPreview(state.preview)
+    val simulator = state.mode == CompanionMode.SIMULATOR
+    Page(R.string.lab_title, if (simulator) R.string.lab_simulator_intro else R.string.lab_intro) {
+        if (simulator) {
+            DisplayPreview(state.preview)
+        }
         Panel {
             SectionTitle(R.string.synthetic_title)
             OutlinedTextField(
@@ -57,37 +63,66 @@ internal fun LabPanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
             ) { Text(stringResource(R.string.synthetic_send)) }
         }
         Panel {
-            SectionTitle(R.string.probes_title)
+            SectionTitle(if (simulator) R.string.simulator_tests else R.string.probes_title)
             SwitchRow(R.string.probes_enable, state.probesEnabled, {
                 onAction(UiAction.SetProbesEnabled(it))
-            }, R.string.probes_toggle_note)
-            if (state.mode == CompanionMode.CONTROLLER && state.probesEnabled) {
+            }, if (simulator) R.string.probes_simulator_note else R.string.probes_toggle_note)
+            if (simulator && state.probesEnabled) {
+                HorizontalDivider()
+                SimulatorMtuPicker(state.simulatorMtu) { onAction(UiAction.SetSimulatorMtu(it)) }
+            } else if (state.probesEnabled) {
                 SwitchRow(R.string.probes_relaxed, state.relaxedSynthetic, {
                     onAction(UiAction.SetRelaxedSynthetic(it))
                 }, R.string.probes_relaxed_note)
             }
         }
         if (state.probesEnabled) {
-            DisplayCapability.entries.forEach { capability ->
+            if (!simulator) {
+                BodyNote(R.string.probes_observations_note)
+            }
+            val capabilities = if (simulator) {
+                listOf(
+                    DisplayCapability.LONG_TEXT, DisplayCapability.SCROLL, DisplayCapability.APP_ICONS,
+                    DisplayCapability.CATEGORIES, DisplayCapability.UPDATE, DisplayCapability.REMOVAL,
+                )
+            } else {
+                DisplayCapability.entries
+            }
+            capabilities.forEach { capability ->
                 val result = state.observations[capability] ?: ProbeObservation.UNTESTED
                 val expanded = selected == capability
+                val canRun = !state.userPaused && (simulator || state.connection == ConnectionState.READY)
                 Panel {
                     ChoiceRow(stringResource(capability.label()), expanded) {
                         selected = capability.takeUnless { expanded }
                     }
-                    Text(
-                        stringResource(result.label()),
-                        color = MaterialTheme.colorScheme.secondary,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
+                    if (!simulator) {
+                        Text(
+                            stringResource(result.label()),
+                            color = MaterialTheme.colorScheme.secondary,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
                     if (expanded) {
-                        BodyNote(capability.instructions())
-                        OutlinedButton(
-                            enabled = state.mode == CompanionMode.CONTROLLER && state.connection == ConnectionState.READY,
-                            onClick = { onAction(UiAction.RunProbe(capability)) },
-                        ) { Text(stringResource(R.string.probe_run)) }
-                        if (state.mode == CompanionMode.CONTROLLER) {
-                            Text(stringResource(R.string.probe_observation), style = MaterialTheme.typography.titleSmall)
+                        if (simulator) {
+                            BodyNote(R.string.probe_simulated_payload)
+                        } else {
+                            BodyNote(capability.instructions())
+                        }
+                        val comparison = capability == DisplayCapability.LONG_TEXT || capability == DisplayCapability.SCROLL
+                        if (comparison) {
+                            LongComparisonControls(capability, state.diagnostics, simulator, canRun, onAction)
+                        } else {
+                            OutlinedButton(
+                                enabled = canRun,
+                                onClick = { onAction(UiAction.RunProbe(capability)) },
+                            ) { Text(stringResource(R.string.probe_run)) }
+                        }
+                        if (!simulator) {
+                            Text(
+                                stringResource(R.string.probe_observation),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
                             ObservationChoices(result) { observation ->
                                 onAction(UiAction.SetObservation(capability, observation))
                             }
@@ -97,6 +132,39 @@ internal fun LabPanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun SimulatorMtuPicker(current: Int, onSelect: (Int) -> Unit) {
+    Text(stringResource(R.string.simulator_mtu_title), style = MaterialTheme.typography.titleSmall)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(23, 64, 185).forEach { mtu ->
+            FilterChip(
+                selected = current == mtu,
+                onClick = { onSelect(mtu) },
+                label = { Text(mtu.toString()) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun LongComparisonControls(
+    capability: DisplayCapability,
+    diagnostics: DiagnosticsUi,
+    simulator: Boolean,
+    canRun: Boolean,
+    onAction: (UiAction) -> Unit,
+) {
+    BodyNote(if (simulator) R.string.probe_comparison_simulator else R.string.probe_comparison_note)
+    OutlinedButton(enabled = canRun, onClick = { onAction(UiAction.RunProbe(capability, extended = false)) }) {
+        Text(stringResource(R.string.probe_legacy))
+    }
+    OutlinedButton(enabled = canRun, onClick = { onAction(UiAction.RunProbe(capability, extended = true)) }) {
+        Text(stringResource(R.string.probe_extended))
+    }
+    HorizontalDivider()
+    AttributeReadout(diagnostics)
 }
 
 @Composable
@@ -119,6 +187,7 @@ private fun ObservationChoices(current: ProbeObservation, onSelect: (ProbeObserv
 
 @Composable
 private fun DisplayPreview(preview: DisplayPreviewUi?) {
+    var expanded by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(25.dp),
@@ -153,8 +222,26 @@ private fun DisplayPreview(preview: DisplayPreviewUi?) {
                         )
                         Text(
                             preview.body, color = Color(0xffd0c5dc), style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 4, overflow = TextOverflow.Ellipsis,
+                            maxLines = if (expanded) Int.MAX_VALUE else 4,
+                            overflow = TextOverflow.Ellipsis,
                         )
+                        Text(
+                            stringResource(
+                                R.string.preview_decoded_bytes,
+                                preview.title.toByteArray(Charsets.UTF_8).size,
+                                preview.body.toByteArray(Charsets.UTF_8).size,
+                            ),
+                            color = Color(0xffbdb0cf),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        if (preview.body.length > 120 || preview.body.count { it == '\n' } >= 4) {
+                            TextButton(
+                                onClick = { expanded = !expanded },
+                                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xffd6beff)),
+                            ) {
+                                Text(stringResource(if (expanded) R.string.preview_collapse else R.string.preview_expand))
+                            }
+                        }
                     }
                 }
             }

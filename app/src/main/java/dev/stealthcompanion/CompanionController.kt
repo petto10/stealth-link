@@ -10,10 +10,12 @@ import dev.stealthcompanion.ble.BlePhase
 import dev.stealthcompanion.ble.BleRuntime
 import dev.stealthcompanion.core.protocol.ControllerSimulator
 import dev.stealthcompanion.core.protocol.ProtocolOptions
+import dev.stealthcompanion.core.protocol.SocialCodec
 import dev.stealthcompanion.core.protocol.SocialPayload
 import dev.stealthcompanion.core.protocol.SocialSession
 import dev.stealthcompanion.core.social.AppRule
 import dev.stealthcompanion.core.social.IncomingNotification
+import dev.stealthcompanion.core.social.SocialFormat
 import dev.stealthcompanion.core.social.SocialMessage
 import dev.stealthcompanion.core.social.SocialPolicy
 import dev.stealthcompanion.core.social.SocialQueue
@@ -49,7 +51,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 internal class CompanionController(private val context: Context) {
-    private data class Synthetic(val title: String, val body: String, val capability: DisplayCapability? = null)
+    private data class Synthetic(
+        val title: String,
+        val body: String,
+        val capability: DisplayCapability? = null,
+        val extended: Boolean? = null,
+    )
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val profiles = ProfileStore(context)
@@ -71,6 +78,7 @@ internal class CompanionController(private val context: Context) {
             theme = preferences.theme,
             language = preferences.language,
             privacyWhileLocked = preferences.privacyWhileLocked,
+            extendedText = preferences.extendedText,
             observations = preferences.observations(),
         ),
     )
@@ -82,8 +90,10 @@ internal class CompanionController(private val context: Context) {
     private var unreadable = 0
     private var reconnects = 0
     private var lastPhase = BlePhase.IDLE
+    private var simulatedSample: DiagnosticsUi? = null
 
     init {
+        BleRuntime.setLongTextEnabled(preferences.extendedText)
         rules.forEach { (id, rule) -> apps[id] = ObservedAppUi(id, id, rule = rule) }
         updateApps()
         refreshProfiles()
@@ -167,6 +177,7 @@ internal class CompanionController(private val context: Context) {
                 locked = phoneLocked(),
                 privateWhenLocked = ui.privacyWhileLocked,
                 privateText = privateText(),
+                format = if (ui.extendedText) SocialFormat.EXTENDED else SocialFormat.COMPACT,
             )
             if (message == null) queue.remove(input.key)
             else queue.offer(message, SystemClock.elapsedRealtime())
@@ -198,6 +209,7 @@ internal class CompanionController(private val context: Context) {
                     displayBrightness = null, sleepMinutes = null),
             )
         }
+        signal()
     }
 
     fun selectConfiguration(id: String) {
@@ -238,6 +250,7 @@ internal class CompanionController(private val context: Context) {
 
     fun stop() {
         tests.clear()
+        simulatedSample = null
         activeDelivery?.cancel()
         discardPrivateData()
         BleRuntime.stop()
@@ -256,6 +269,22 @@ internal class CompanionController(private val context: Context) {
         discardPrivateData()
         preferences.privacyWhileLocked = value
         update { it.copy(privacyWhileLocked = value) }
+    }
+
+    fun setExtendedText(value: Boolean) {
+        if (state.value.extendedText == value) return
+        discardPrivateData()
+        preferences.extendedText = value
+        BleRuntime.setLongTextEnabled(value)
+        update { it.copy(extendedText = value) }
+        signal()
+    }
+
+    fun setSimulatorMtu(value: Int) {
+        if (value !in setOf(23, 64, 185) || state.value.simulatorMtu == value) return
+        simulatedSample = null
+        update { it.copy(simulatorMtu = value, preview = null) }
+        signal()
     }
 
     fun screenTurnedOff() {
@@ -311,14 +340,17 @@ internal class CompanionController(private val context: Context) {
         queueTest(Synthetic(title.take(1024), body.take(4096)))
     }
 
-    fun runProbe(capability: DisplayCapability) {
+    fun runProbe(capability: DisplayCapability, extended: Boolean? = null) {
         if (!state.value.probesEnabled) return
-        val body = when (capability) {
-            DisplayCapability.LONG_TEXT, DisplayCapability.SCROLL ->
-                (1..20).joinToString("\n") { "%02d · Città, caffè, perché — 🕹️🎮".format(it) }
-            else -> "Social test · À È Ì Ò Ù · 🔔"
+        val longSample = capability == DisplayCapability.LONG_TEXT || capability == DisplayCapability.SCROLL
+        val title = if (longSample) "Notifica estesa · prova Social" else "Lab · ${capability.name}"
+        val body = if (longSample) {
+            "Caffè pronto · già qui 🎮\n" +
+                (1..12).joinToString("\n") { "${it.toString().padStart(2, '0')} · Città, perché — 🕹️" }
+        } else {
+            "Social test · À È Ì Ò Ù · 🔔"
         }
-        queueTest(Synthetic("Lab · ${capability.name}", body, capability))
+        queueTest(Synthetic(title, body, capability, extended))
     }
 
     fun readSettings() {
@@ -348,8 +380,18 @@ internal class CompanionController(private val context: Context) {
     fun diagnostics(): String {
         val current = queue.stats
         return buildString {
-            appendLine("Stealth Link / diagnostics v1")
+            appendLine("Stealth Link / diagnostics v2")
             appendLine("mode=${state.value.mode}")
+            appendLine("extended_text=${state.value.extendedText}")
+            if (state.value.mode == CompanionMode.SIMULATOR) {
+                appendLine("simulator_mtu=${state.value.simulatorMtu}")
+                simulatedSample?.let { sample ->
+                    appendLine("simulator_attribute_requests=${sample.attributeRequests}")
+                    appendLine("simulator_fragments_sent=${sample.fragmentsSent}")
+                    appendLine("simulator_sent_title_bytes=${sample.lastSentTitleBytes}")
+                    appendLine("simulator_sent_body_bytes=${sample.lastSentBodyBytes}")
+                }
+            }
             appendLine("notification_access=${state.value.notificationAccess}")
             appendLine("accepted=${current.accepted}")
             appendLine("coalesced=${current.coalesced}")
@@ -407,9 +449,11 @@ internal class CompanionController(private val context: Context) {
                     continue
                 }
             }
-            val nextAt = if (ready && !ui.userPaused && !ui.probesEnabled) queue.nextReadyAt(now) else null
-            if (queue.size == 0) wake.receive()
-            else withTimeoutOrNull(nextAt?.let { (it - now).coerceIn(1, 1000) } ?: 1000) { wake.receive() }
+            val nextReadyAt = if (ready && !ui.userPaused && !ui.probesEnabled) queue.nextReadyAt(now) else null
+            val nextExpirationAt = queue.nextExpirationAt(now)
+            val nextAt = listOfNotNull(nextReadyAt, nextExpirationAt).minOrNull()
+            if (nextAt == null) wake.receive()
+            else withTimeoutOrNull((nextAt - now).coerceAtLeast(1)) { wake.receive() }
             updateDiagnostics()
         }
     }
@@ -426,17 +470,23 @@ internal class CompanionController(private val context: Context) {
             message.copy(title = privateText(), body = privateText())
         } else message
         return when (ui.mode) {
-            CompanionMode.SIMULATOR -> simulate(content, ProtocolOptions(), 4, false) != null
-            CompanionMode.CONTROLLER -> BleRuntime.send(content.key, content.title, content.body, content.packageName)
+            CompanionMode.SIMULATOR -> simulate(content, ProtocolOptions(), 4, false, ui.extendedText) != null
+            CompanionMode.CONTROLLER -> BleRuntime.send(content.deliveryKey, content.title, content.body, content.packageName)
         }
     }
 
     private suspend fun deliverTest(test: Synthetic, mode: CompanionMode) {
         val capability = test.capability
+        val extended = test.extended ?: when (capability) {
+            DisplayCapability.LONG_TEXT, DisplayCapability.SCROLL -> true
+            null -> state.value.extendedText
+            else -> false
+        }
         val options = when (capability) {
-            DisplayCapability.LONG_TEXT, DisplayCapability.SCROLL ->
-                ProtocolOptions(allowFragmentation = true, maxAttributeBytes = 1024)
-            DisplayCapability.APP_ICONS -> ProtocolOptions(allowApplicationIdentifier = true)
+            DisplayCapability.APP_ICONS -> ProtocolOptions(
+                allowApplicationIdentifier = true, allowMultipleAttributes = true,
+                allowFragmentation = true, maxAttributeBytes = 1024,
+            )
             DisplayCapability.CATEGORIES -> ProtocolOptions(allowCustomCategories = true)
             DisplayCapability.UPDATE -> ProtocolOptions(allowUpdates = true)
             DisplayCapability.REMOVAL -> ProtocolOptions(allowRemovals = true)
@@ -446,11 +496,11 @@ internal class CompanionController(private val context: Context) {
         val message = SocialMessage("synthetic-${++serial}", test.title, test.body, SYNTHETIC_APP)
         val result = when (mode) {
             CompanionMode.SIMULATOR -> {
-                val preview = simulate(message, options, category, true, capability)
+                val preview = simulate(message, options, category, true, extended, capability)
                 update { it.copy(preview = preview) }
                 preview != null || capability == DisplayCapability.REMOVAL
             }
-            CompanionMode.CONTROLLER -> deliverBleTest(message, options, category, capability)
+            CompanionMode.CONTROLLER -> deliverBleTest(message, options, category, extended, capability)
         }
         if (result) sent++ else transportDrops++
         if (capability != null) tell(if (result) UiFeedback.PROBE_MANUAL else UiFeedback.PROBE_UNAVAILABLE)
@@ -461,6 +511,7 @@ internal class CompanionController(private val context: Context) {
         message: SocialMessage,
         options: ProtocolOptions,
         category: Int,
+        extended: Boolean,
         capability: DisplayCapability?,
     ): Boolean {
         val usesExperiment = options != ProtocolOptions()
@@ -471,16 +522,23 @@ internal class CompanionController(private val context: Context) {
                     BleRuntime.state.first { it.socialReady && it.syntheticOnly }
                 } ?: return false
             }
-            val initial = BleRuntime.send(message.key, message.title, message.body, SYNTHETIC_APP, true, category)
+            val initial = BleRuntime.send(
+                message.key, message.title, message.body, SYNTHETIC_APP, true, category,
+                applicationName = SYNTHETIC_APP_NAME.takeIf { options.allowApplicationIdentifier },
+                longTextOverride = extended,
+            )
             if (!initial) return false
             if (capability == DisplayCapability.UPDATE || capability == DisplayCapability.REMOVAL) delay(1500)
             if (state.value.mode != CompanionMode.CONTROLLER || !state.value.isRunning) return false
-            return when (capability) {
+            val result = when (capability) {
                 DisplayCapability.UPDATE ->
                     BleRuntime.send(message.key, "Lab · updated", "2 · Updated synthetic text", SYNTHETIC_APP, true, category)
                 DisplayCapability.REMOVAL -> BleRuntime.remove(message.key)
                 else -> true
             }
+            // Leave time for optional App Attributes and detail-view requests before restoring the session.
+            if (result && usesExperiment) delay(PROBE_OBSERVATION_MS)
+            return result
         } finally {
             if (usesExperiment) BleRuntime.setProbeOptions(syntheticOnlyUnencrypted = state.value.relaxedSynthetic)
         }
@@ -491,20 +549,37 @@ internal class CompanionController(private val context: Context) {
         options: ProtocolOptions,
         category: Int,
         synthetic: Boolean,
+        extended: Boolean,
         capability: DisplayCapability? = null,
     ): DisplayPreviewUi? {
+        val requestedBytes = 1024
         val simulator = ControllerSimulator(
-            mtu = if (options.allowFragmentation) 64 else 23,
-            requestedTitleBytes = if (options.allowFragmentation) 1024 else 255,
-            requestedMessageBytes = if (options.allowFragmentation) 1024 else 255,
+            mtu = state.value.simulatorMtu,
+            requestedTitleBytes = requestedBytes,
+            requestedMessageBytes = requestedBytes,
             requestApplicationIdentifier = options.allowApplicationIdentifier,
         )
         val session = SocialSession(options)
         val now = SystemClock.elapsedRealtime()
+        var requests = 0
+        var fragments = 0
         fun feed(title: String, body: String) {
-            val payload = SocialPayload(title, body, if (synthetic) SYNTHETIC_APP else null, "Stealth Link")
-            val event = session.publish(message.key, payload, now, category) ?: return
-            simulator.receive(event) { request, mtu -> session.respond(request, mtu, now) }
+            val payload = SocialPayload(title, body, if (synthetic) SYNTHETIC_APP else null, SYNTHETIC_APP_NAME)
+            val event = session.publish(message.deliveryKey, payload, now, category, allowLongResponse = extended) ?: return
+            val result = simulator.receive(event) { request, mtu ->
+                requests++
+                session.respond(request, mtu, now).also { fragments += it.size }
+            }
+            if (synthetic) {
+                simulatedSample = DiagnosticsUi(
+                    attributeRequests = requests,
+                    fragmentsSent = fragments,
+                    lastRequestedTitleBytes = requestedBytes,
+                    lastRequestedBodyBytes = requestedBytes,
+                    lastSentTitleBytes = result?.title?.toByteArray(Charsets.UTF_8)?.size,
+                    lastSentBodyBytes = result?.text?.toByteArray(Charsets.UTF_8)?.size,
+                )
+            }
         }
         feed(message.title, message.body)
         when (capability) {
@@ -533,14 +608,22 @@ internal class CompanionController(private val context: Context) {
 
     private fun updateDiagnostics() {
         val stats = queue.stats
-        val mtu = BleRuntime.state.value.mtu.takeIf { state.value.mode == CompanionMode.CONTROLLER }
-        update {
-            it.copy(diagnostics = DiagnosticsUi(
+        val bluetooth = BleRuntime.state.value.takeIf { state.value.mode == CompanionMode.CONTROLLER }
+        update { ui ->
+            ui.copy(diagnostics = DiagnosticsUi(
                 queued = queue.size + tests.size,
                 sent = sent,
                 dropped = (stats.expired + stats.overflow).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() + transportDrops,
                 reconnects = reconnects,
-                mtu = mtu,
+                socialMtu = bluetooth?.mtu ?: ui.simulatorMtu.takeIf { ui.mode == CompanionMode.SIMULATOR },
+                socialMtuKnown = bluetooth?.socialMtuKnown == true,
+                configurationMtu = bluetooth?.clientMtu,
+                attributeRequests = bluetooth?.attributeRequests ?: simulatedSample?.attributeRequests,
+                fragmentsSent = bluetooth?.fragmentsSent ?: simulatedSample?.fragmentsSent,
+                lastRequestedTitleBytes = bluetooth?.lastRequestedTitleBytes ?: simulatedSample?.lastRequestedTitleBytes,
+                lastRequestedBodyBytes = bluetooth?.lastRequestedBodyBytes ?: simulatedSample?.lastRequestedBodyBytes,
+                lastSentTitleBytes = bluetooth?.lastSentTitleBytes ?: simulatedSample?.lastSentTitleBytes,
+                lastSentBodyBytes = bluetooth?.lastSentBodyBytes ?: simulatedSample?.lastSentBodyBytes,
             ))
         }
     }
@@ -564,6 +647,9 @@ internal class CompanionController(private val context: Context) {
     )
 
     private companion object {
-        const val SYNTHETIC_APP = "dev.stealthcompanion.synthetic"
+        // An ANCS Get App Attributes command for this identifier fits in one ATT write at MTU 23.
+        const val SYNTHETIC_APP = "dev.stealth.lab"
+        const val SYNTHETIC_APP_NAME = "Stealth Link"
+        const val PROBE_OBSERVATION_MS = 4_000L
     }
 }

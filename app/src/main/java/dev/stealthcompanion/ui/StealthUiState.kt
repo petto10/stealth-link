@@ -43,6 +43,15 @@ data class DiagnosticsUi(
     val dropped: Int = 0,
     val reconnects: Int = 0,
     val mtu: Int? = null,
+    val socialMtu: Int? = null,
+    val socialMtuKnown: Boolean = false,
+    val configurationMtu: Int? = null,
+    val attributeRequests: Int? = null,
+    val fragmentsSent: Int? = null,
+    val lastRequestedTitleBytes: Int? = null,
+    val lastRequestedBodyBytes: Int? = null,
+    val lastSentTitleBytes: Int? = null,
+    val lastSentBodyBytes: Int? = null,
 )
 
 data class ProfileUi(val id: String, val name: String)
@@ -73,6 +82,8 @@ data class StealthUiState(
     val profiles: ProfilesUi = ProfilesUi(),
     val probesEnabled: Boolean = false,
     val relaxedSynthetic: Boolean = false,
+    val extendedText: Boolean = false,
+    val simulatorMtu: Int = 23,
     val observations: Map<DisplayCapability, ProbeObservation> = emptyMap(),
     val feedback: UiFeedback? = null,
     val theme: ThemeMode = ThemeMode.SYSTEM,
@@ -94,7 +105,9 @@ sealed interface UiAction {
     data class SendSynthetic(val title: String, val body: String) : UiAction
     data class SetProbesEnabled(val value: Boolean) : UiAction
     data class SetRelaxedSynthetic(val value: Boolean) : UiAction
-    data class RunProbe(val capability: DisplayCapability) : UiAction
+    data class SetExtendedText(val value: Boolean) : UiAction
+    data class SetSimulatorMtu(val value: Int) : UiAction
+    data class RunProbe(val capability: DisplayCapability, val extended: Boolean? = null) : UiAction
     data class SetObservation(val capability: DisplayCapability, val value: ProbeObservation) : UiAction
     data object ExportDiagnostics : UiAction
     data object ReadSettings : UiAction

@@ -47,7 +47,6 @@
     <string name="diagnostic_title">Bluetooth diagnostics</string>
     <string name="diagnostic_subtitle">Export counts, connection statuses and transport errors. Notification contents and Bluetooth addresses stay out of the export.</string>
     <string name="diagnostic_export">Export diagnostics</string>
-    <string name="diagnostic_mtu">Negotiated MTU %1$d</string>
     <string name="notifications_title">Choose what reaches the display</string>
     <string name="notifications_intro">Enable apps individually. Refine forwarding by channel, contact or conversation.</string>
     <string name="privacy_locked">Privacy while locked</string>
@@ -75,7 +74,7 @@
     <string name="action_remove">Remove</string>
     <string name="lab_title">Test the display</string>
     <string name="lab_intro">Send synthetic content and record what the controller actually shows.</string>
-    <string name="preview_label">Display preview</string>
+    <string name="preview_label">Simulator output</string>
     <string name="preview_empty">Your test message will appear here.</string>
     <string name="synthetic_title">Test message</string>
     <string name="synthetic_title_field">Title</string>
@@ -152,4 +151,29 @@
     <string name="feedback_profiles_exported">Profile backup exported.</string>
     <string name="feedback_diagnostics_exported">Diagnostics exported.</string>
     <string name="feedback_file_error">The file operation could not be completed.</string>
+    <string name="diagnostic_sim_mtu">Simulator MTU</string>
+    <string name="diagnostic_social_mtu">Negotiated Social MTU</string>
+    <string name="diagnostic_default_mtu">Social MTU (ATT default)</string>
+    <string name="diagnostic_config_mtu">Settings MTU</string>
+    <string name="diagnostic_requests">Attribute requests</string>
+    <string name="diagnostic_fragments">Data Source fragments sent</string>
+    <string name="diagnostic_attribute_lengths">Latest attribute lengths in bytes</string>
+    <string name="diagnostic_attribute">Attribute</string>
+    <string name="diagnostic_attribute_requested">Requested max</string>
+    <string name="diagnostic_attribute_sent">Sent</string>
+    <string name="extended_text">Extended text (experimental)</string>
+    <string name="extended_text_note">Allow multiple fragments per attribute for all notifications. Test that your controller reassembles them before enabling this option.</string>
+    <string name="lab_simulator_intro">Compare payload sizes, test events and inspect the text decoded by the simulator.</string>
+    <string name="simulator_tests">Protocol tests</string>
+    <string name="probes_simulator_note">Choose an MTU to compare single-frame and fragmented responses.</string>
+    <string name="simulator_mtu_title">Simulated ATT MTU</string>
+    <string name="probe_simulated_payload">Inspect the payload decoded by the simulator. Display behavior requires a controller.</string>
+    <string name="probe_comparison_note">A and B send the same sample. Compare the byte counts and note the last numbered section visible on the controller in each run.</string>
+    <string name="probe_comparison_simulator">A and B send the same sample. Compare the byte counts and the decoded text.</string>
+    <string name="probe_legacy">Send A · Compatibility</string>
+    <string name="probe_extended">Send B · Fragmented</string>
+    <string name="probes_observations_note">Results record what you observed on the controller during a test. Repeat the tests if your firmware or device changes.</string>
+    <string name="preview_decoded_bytes">Decoded bytes · title %1$d · message %2$d</string>
+    <string name="preview_expand">Show full message</string>
+    <string name="preview_collapse">Show less</string>
 </resources>

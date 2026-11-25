@@ -55,4 +55,28 @@ class SocialPipelineTest {
         assertTrue(display.displayed.last().text.contains("Alle nove — Lia"))
         assertNull(queue.poll(6))
     }
+
+    @Test fun repeatedConversationTextCanReachTheDisplayAsTwoDifferentEvents() {
+        val entry = ConversationMessage("Lia", "Ciao", 1)
+        val input = IncomingNotification(
+            key = "chat",
+            packageName = "lab.example.chat",
+            appName = "Chat",
+            conversation = "Squadra",
+        )
+        val rule = AppRule(enabled = true)
+        val queue = SocialQueue(coalesceMs = 0)
+        val session = SocialSession(ProtocolOptions())
+        val display = ControllerSimulator(mtu = 64)
+
+        listOf(listOf(entry), listOf(entry, entry.copy(timestamp = 2))).forEachIndexed { index, messages ->
+            val time = index.toLong()
+            assertTrue(queue.offer(requireNotNull(SocialPolicy.render(input.copy(messages = messages), rule)), time))
+            val outgoing = requireNotNull(queue.poll(time))
+            val event = requireNotNull(session.publish(outgoing.deliveryKey, SocialPayload(outgoing.title, outgoing.body), time))
+            requireNotNull(display.receive(event) { request, mtu -> session.respond(request, mtu, time) })
+        }
+
+        assertEquals(listOf("Ciao — Lia", "Ciao — Lia"), display.displayed.map { it.text })
+    }
 }

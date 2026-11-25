@@ -53,9 +53,14 @@ class PhoneNotificationListener : NotificationListenerService() {
         val title = extras?.getCharSequence(Notification.EXTRA_TITLE).bounded()
         val body = extras?.getCharSequence(Notification.EXTRA_BIG_TEXT).bounded()
             ?: extras?.getCharSequence(Notification.EXTRA_TEXT).bounded()
+            ?: extras?.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+                ?.takeLast(12)?.mapNotNull { it.bounded() }?.joinToString("\n").bounded()
             ?: extras?.getCharSequence(Notification.EXTRA_SUB_TEXT).bounded()
         val conversation = style?.conversationTitle.bounded()
             ?: extras?.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE).bounded()
+            ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && rank?.isConversation == true) {
+                rank.conversationShortcutInfo?.shortLabel.bounded()
+            } else null
         val channel = if (Build.VERSION.SDK_INT >= 26) notification.channelId else null
         val messageParts = sequenceOf(title, body) + messages.asSequence().map { it.text }
         val sensitive = notification.visibility == Notification.VISIBILITY_SECRET ||
@@ -90,5 +95,10 @@ class PhoneNotificationListener : NotificationListenerService() {
         sourcePackage
     }
 
-    private fun CharSequence?.bounded(): String? = this?.take(4096)?.toString()?.takeIf(String::isNotBlank)
+    private fun CharSequence?.bounded(): String? {
+        if (this == null) return null
+        val end = length.coerceAtMost(4096)
+        val adjustedEnd = if (end < length && this[end - 1].isHighSurrogate()) end - 1 else end
+        return subSequence(0, adjustedEnd).toString().takeIf(String::isNotBlank)
+    }
 }

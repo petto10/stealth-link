@@ -1,8 +1,5 @@
 package dev.stealthcompanion.core.social
 
-import java.nio.ByteBuffer
-import java.security.MessageDigest
-
 data class SocialQueueStats(
     val accepted: Long = 0,
     val coalesced: Long = 0,
@@ -16,14 +13,24 @@ class SocialQueue(
     private val capacity: Int = 32,
     private val ttlMs: Long = 30_000,
     private val coalesceMs: Long = 350,
+    private val conversationHistoryTtlMs: Long = 300_000,
 ) {
     init {
         require(capacity > 0)
         require(ttlMs > 0 && coalesceMs in 0 until ttlMs)
+        require(conversationHistoryTtlMs > 0)
     }
 
-    private data class Pending(val message: SocialMessage, val digest: ByteArray, val readyAt: Long, val expiresAt: Long)
-    private data class Dispatched(val digest: ByteArray, val expiresAt: Long)
+    private data class Pending(val message: SocialMessage, val digest: String, val readyAt: Long, val expiresAt: Long)
+    private data class Dispatched(
+        val digest: String,
+        val expiresAt: Long,
+        val conversationIdentities: Set<String>,
+        val conversationExpiresAt: Long,
+    ) {
+        fun conversationIdentitiesAt(now: Long): Set<String> =
+            conversationIdentities.takeIf { conversationExpiresAt > now }.orEmpty()
+    }
 
     private val pending = LinkedHashMap<String, Pending>()
     private val dispatched = LinkedHashMap<String, Dispatched>()
@@ -38,22 +45,27 @@ class SocialQueue(
     fun offer(message: SocialMessage, now: Long): Boolean {
         prune(now)
         val previous = pending[message.key]
-        val digest = fingerprint(message)
-        if (previous?.digest?.contentEquals(digest) == true) {
-            counts = counts.copy(duplicates = counts.duplicates + 1)
-            return false
-        }
-        if (dispatched[message.key]?.digest?.contentEquals(digest) == true) {
-            // Android can revert an update while it is waiting to be sent.
+        val sent = dispatched[message.key]
+        val update = message.conversationUpdate
+        val sentIdentities = sent?.conversationIdentitiesAt(now).orEmpty()
+        val unseen = update?.entries?.filterNot { it.identity in sentIdentities }
+        if (unseen != null && unseen.isEmpty()) {
             pending.remove(message.key)
-            counts = counts.copy(duplicates = counts.duplicates + 1)
-            return false
+            return duplicate()
+        }
+        val candidate = unseen?.let(message::renderConversation) ?: message
+        val digest = fingerprint(candidate)
+        if (previous?.digest == digest) return duplicate()
+        if (update == null && sent != null && sent.expiresAt > now && sent.digest == digest) {
+            // The source can revert to an alert already seen while an update waits in the queue.
+            pending.remove(message.key)
+            return duplicate()
         }
         if (previous == null && pending.size == capacity) {
             pending.remove(pending.keys.first())
             counts = counts.copy(overflow = counts.overflow + 1)
         }
-        pending[message.key] = Pending(message, digest, previous?.readyAt ?: now + coalesceMs, now + ttlMs)
+        pending[message.key] = Pending(candidate, digest, previous?.readyAt ?: now + coalesceMs, now + ttlMs)
         counts = if (previous == null) counts.copy(accepted = counts.accepted + 1)
         else counts.copy(coalesced = counts.coalesced + 1)
         return true
@@ -65,16 +77,35 @@ class SocialQueue(
         prune(now)
         val next = pending.values.firstOrNull()?.takeIf { it.readyAt <= now } ?: return null
         pending.remove(next.message.key)
-        dispatched.remove(next.message.key)
-        dispatched[next.message.key] = Dispatched(next.digest, now + ttlMs)
+        val previous = dispatched.remove(next.message.key)
+        val update = next.message.conversationUpdate
+        val previousIdentities = previous?.conversationIdentitiesAt(now).orEmpty()
+        // Consume every fresh identity, including the older context omitted by the display mode.
+        val identities = (previousIdentities.toList() + update?.entries.orEmpty().map { it.identity })
+            .takeLast(MAX_CONVERSATION_HISTORY).toSet()
+        val historyExpiresAt = when {
+            update != null -> now + conversationHistoryTtlMs
+            identities.isNotEmpty() -> requireNotNull(previous).conversationExpiresAt
+            else -> now
+        }
+        dispatched[next.message.key] = Dispatched(next.digest, now + ttlMs, identities, historyExpiresAt)
         if (dispatched.size > dispatchHistoryLimit) dispatched.remove(dispatched.keys.first())
-        return next.message
+        return if (update == null) next.message else next.message.copy(
+            conversationUpdate = null,
+            deliveryKey = "${next.message.key}:${next.digest}",
+        )
     }
 
     @Synchronized
     fun nextReadyAt(now: Long): Long? {
         prune(now)
         return pending.values.firstOrNull()?.readyAt
+    }
+
+    @Synchronized
+    fun nextExpirationAt(now: Long): Long? {
+        prune(now)
+        return pending.values.minOfOrNull { it.expiresAt }
     }
 
     @Synchronized
@@ -97,18 +128,24 @@ class SocialQueue(
     private fun prune(now: Long) {
         val previousSize = pending.size
         pending.values.removeAll { it.expiresAt <= now }
-        dispatched.values.removeAll { it.expiresAt <= now }
+        dispatched.values.removeAll { it.expiresAt <= now && it.conversationExpiresAt <= now }
         val expired = previousSize - pending.size
         if (expired > 0) counts = counts.copy(expired = counts.expired + expired)
     }
 
-    private fun fingerprint(message: SocialMessage): ByteArray {
-        val digest = MessageDigest.getInstance("SHA-256")
-        for (field in listOf(message.title, message.body, message.packageName.orEmpty())) {
-            val value = field.toByteArray(Charsets.UTF_8)
-            digest.update(ByteBuffer.allocate(Int.SIZE_BYTES).putInt(value.size).array())
-            digest.update(value)
-        }
-        return digest.digest()
+    private fun duplicate(): Boolean {
+        counts = counts.copy(duplicates = counts.duplicates + 1)
+        return false
+    }
+
+    private fun fingerprint(message: SocialMessage): String = socialDigest(
+        message.title,
+        message.body,
+        message.packageName.orEmpty(),
+        *message.conversationUpdate?.entries.orEmpty().map { it.identity }.toTypedArray(),
+    )
+
+    private companion object {
+        const val MAX_CONVERSATION_HISTORY = 48
     }
 }
