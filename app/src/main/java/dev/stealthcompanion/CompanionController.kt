@@ -7,8 +7,10 @@ import android.os.SystemClock
 import androidx.core.app.NotificationManagerCompat
 import dev.stealthcompanion.ble.BleDeviceRole
 import dev.stealthcompanion.ble.BlePhase
+import dev.stealthcompanion.ble.BleProbe
 import dev.stealthcompanion.ble.BleRuntime
 import dev.stealthcompanion.core.protocol.ControllerSimulator
+import dev.stealthcompanion.core.protocol.LengthProbe
 import dev.stealthcompanion.core.protocol.ProtocolOptions
 import dev.stealthcompanion.core.protocol.SocialCodec
 import dev.stealthcompanion.core.protocol.SocialPayload
@@ -28,6 +30,7 @@ import dev.stealthcompanion.ui.DiagnosticsUi
 import dev.stealthcompanion.ui.DisplayCapability
 import dev.stealthcompanion.ui.DisplayPreviewUi
 import dev.stealthcompanion.ui.LanguageMode
+import dev.stealthcompanion.ui.LengthProbeOutcome
 import dev.stealthcompanion.ui.ObservedAppUi
 import dev.stealthcompanion.ui.ProbeObservation
 import dev.stealthcompanion.ui.ProfileUi
@@ -56,7 +59,10 @@ internal class CompanionController(private val context: Context) {
         val body: String,
         val capability: DisplayCapability? = null,
         val extended: Boolean? = null,
+        val lengthRun: LengthRun? = null,
     )
+
+    private data class LengthRun(val id: Long, val spec: LengthProbe, val pages: List<SocialPayload>)
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val profiles = ProfileStore(context)
@@ -65,6 +71,7 @@ internal class CompanionController(private val context: Context) {
     private val apps = LinkedHashMap<String, ObservedAppUi>()
     private val queue = SocialQueue()
     private val tests = ArrayDeque<Synthetic>()
+    private val lengthHistory = LengthProbeHistory()
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
     private val power = context.getSystemService(PowerManager::class.java)
@@ -79,6 +86,7 @@ internal class CompanionController(private val context: Context) {
             language = preferences.language,
             privacyWhileLocked = preferences.privacyWhileLocked,
             extendedText = preferences.extendedText,
+            notificationsOnly = preferences.notificationsOnly,
             observations = preferences.observations(),
         ),
     )
@@ -88,20 +96,20 @@ internal class CompanionController(private val context: Context) {
     private var sent = 0
     private var transportDrops = 0
     private var unreadable = 0
-    private var reconnects = 0
-    private var lastPhase = BlePhase.IDLE
     private var simulatedSample: DiagnosticsUi? = null
 
     init {
         BleRuntime.setLongTextEnabled(preferences.extendedText)
+        BleRuntime.setNotificationsOnly(preferences.notificationsOnly)
         rules.forEach { (id, rule) -> apps[id] = ObservedAppUi(id, id, rule = rule) }
         updateApps()
         refreshProfiles()
         scope.launch {
             BleRuntime.state.collect { status ->
-                if (lastPhase != BlePhase.RETRYING && status.phase == BlePhase.RETRYING) reconnects++
-                lastPhase = status.phase
                 if (state.value.mode == CompanionMode.CONTROLLER) {
+                    if (!status.socialReady && state.value.connection == ConnectionState.READY) {
+                        discardQueuedTests { it.lengthRun != null }
+                    }
                     update { ui ->
                         ui.copy(
                             isRunning = status.phase !in setOf(BlePhase.IDLE, BlePhase.PERMISSION_REQUIRED),
@@ -205,6 +213,8 @@ internal class CompanionController(private val context: Context) {
                 mode = mode,
                 isRunning = mode == CompanionMode.SIMULATOR,
                 connection = if (mode == CompanionMode.SIMULATOR) ConnectionState.READY else ConnectionState.IDLE,
+                lastLengthProbeId = null,
+                lastLengthProbeOutcome = null,
                 profiles = ui.profiles.copy(activeSlot = null, slotNames = emptyMap(), powerMode = null,
                     displayBrightness = null, sleepMinutes = null),
             )
@@ -249,7 +259,7 @@ internal class CompanionController(private val context: Context) {
     }
 
     fun stop() {
-        tests.clear()
+        discardQueuedTests { true }
         simulatedSample = null
         activeDelivery?.cancel()
         discardPrivateData()
@@ -277,6 +287,14 @@ internal class CompanionController(private val context: Context) {
         preferences.extendedText = value
         BleRuntime.setLongTextEnabled(value)
         update { it.copy(extendedText = value) }
+        signal()
+    }
+
+    fun setNotificationsOnly(value: Boolean) {
+        if (state.value.notificationsOnly == value) return
+        preferences.notificationsOnly = value
+        BleRuntime.setNotificationsOnly(value)
+        update { it.copy(notificationsOnly = value) }
         signal()
     }
 
@@ -313,7 +331,7 @@ internal class CompanionController(private val context: Context) {
     fun setProbeMode(enabled: Boolean) {
         activeDelivery?.cancel()
         if (enabled) discardPrivateData() else {
-            tests.removeAll { it.capability != null }
+            discardQueuedTests { it.capability != null || it.lengthRun != null }
             setRelaxedSynthetic(false)
         }
         update { it.copy(probesEnabled = enabled) }
@@ -353,6 +371,30 @@ internal class CompanionController(private val context: Context) {
         queueTest(Synthetic(title, body, capability, extended))
     }
 
+    fun sendLengthProbe(spec: LengthProbe, extended: Boolean) {
+        val ui = state.value
+        if (!ui.probesEnabled || ui.userPaused || !canQueueTest(ui)) {
+            tell(UiFeedback.PROBE_UNAVAILABLE)
+            return
+        }
+        val title = "Length ${spec.bytes}"
+        val body = spec.body()
+        val pages = if (spec.paged) spec.pages(title, body) else listOf(SocialPayload(title, body))
+        val run = LengthRun(preferences.nextLengthProbeId(), spec, pages)
+        val fragmented = extended && !spec.paged
+        lengthHistory.queued(run.id, spec, fragmented, ui.mode, pages.size)
+        update { it.copy(lastLengthProbeId = run.id, lastLengthProbeOutcome = LengthProbeOutcome.QUEUED) }
+        queueTest(Synthetic(title, body, extended = fragmented, lengthRun = run))
+    }
+
+    fun markLengthProbeDetail() {
+        val ui = state.value
+        if (ui.mode != CompanionMode.CONTROLLER || ui.lastLengthProbeOutcome !in setOf(
+                LengthProbeOutcome.GATT_COMPLETE, LengthProbeOutcome.INCOMPLETE,
+            )) return
+        ui.lastLengthProbeId?.let(BleRuntime::markProbeDetail)
+    }
+
     fun readSettings() {
         if (state.value.mode != CompanionMode.CONTROLLER || !BleRuntime.state.value.settingsConnected) {
             tell(UiFeedback.SETTINGS_UNAVAILABLE)
@@ -380,7 +422,7 @@ internal class CompanionController(private val context: Context) {
     fun diagnostics(): String {
         val current = queue.stats
         return buildString {
-            appendLine("Stealth Link / diagnostics v2")
+            appendLine("Stealth Link / diagnostics v3")
             appendLine("mode=${state.value.mode}")
             appendLine("extended_text=${state.value.extendedText}")
             if (state.value.mode == CompanionMode.SIMULATOR) {
@@ -401,7 +443,7 @@ internal class CompanionController(private val context: Context) {
             appendLine("transport_drops=$transportDrops")
             appendLine("unreadable_notifications=$unreadable")
             appendLine("transport_completed=$sent")
-            appendLine("reconnects=$reconnects")
+            lengthHistory.appendTo(this)
             append(BleRuntime.exportDiagnostics())
         }
     }
@@ -420,13 +462,32 @@ internal class CompanionController(private val context: Context) {
     }
 
     private fun queueTest(value: Synthetic) {
-        if (!state.value.isRunning || state.value.connection != ConnectionState.READY || tests.size >= 12) {
-            tell(if (value.capability == null) UiFeedback.TEST_UNAVAILABLE else UiFeedback.PROBE_UNAVAILABLE)
+        val probe = value.capability != null || value.lengthRun != null
+        if (!canQueueTest(state.value)) {
+            tell(if (probe) UiFeedback.PROBE_UNAVAILABLE else UiFeedback.TEST_UNAVAILABLE)
             return
         }
         tests.addLast(value)
-        tell(if (value.capability == null) UiFeedback.TEST_QUEUED else UiFeedback.PROBE_QUEUED)
+        tell(if (probe) UiFeedback.PROBE_QUEUED else UiFeedback.TEST_QUEUED)
         signal()
+    }
+
+    private fun canQueueTest(ui: StealthUiState) =
+        ui.isRunning && ui.connection == ConnectionState.READY && tests.size < 12
+
+    private fun discardQueuedTests(predicate: (Synthetic) -> Boolean) {
+        tests.removeAll { test ->
+            if (!predicate(test)) return@removeAll false
+            test.lengthRun?.let { finishLengthRun(it, 0, LengthProbeOutcome.INCOMPLETE) }
+            true
+        }
+    }
+
+    private fun finishLengthRun(run: LengthRun, completed: Int, outcome: LengthProbeOutcome) {
+        lengthHistory.finish(run.id, completed, outcome)
+        update { ui ->
+            if (ui.lastLengthProbeId == run.id) ui.copy(lastLengthProbeOutcome = outcome) else ui
+        }
     }
 
     private suspend fun drain() {
@@ -476,6 +537,7 @@ internal class CompanionController(private val context: Context) {
     }
 
     private suspend fun deliverTest(test: Synthetic, mode: CompanionMode) {
+        test.lengthRun?.let { return deliverLengthRun(it, mode, test.extended == true) }
         val capability = test.capability
         val extended = test.extended ?: when (capability) {
             DisplayCapability.LONG_TEXT, DisplayCapability.SCROLL -> true
@@ -505,6 +567,45 @@ internal class CompanionController(private val context: Context) {
         if (result) sent++ else transportDrops++
         if (capability != null) tell(if (result) UiFeedback.PROBE_MANUAL else UiFeedback.PROBE_UNAVAILABLE)
         else if (!result) tell(UiFeedback.TEST_UNAVAILABLE)
+    }
+
+    private suspend fun deliverLengthRun(run: LengthRun, mode: CompanionMode, extended: Boolean) {
+        var completed = 0
+        val previews = mutableListOf<DisplayPreviewUi>()
+        try {
+            for ((index, page) in run.pages.withIndex()) {
+                val key = "length-${run.id}-${index + 1}"
+                val message = SocialMessage(key, page.title, page.text, SYNTHETIC_APP)
+                val success = when (mode) {
+                    CompanionMode.SIMULATOR -> {
+                        val preview = simulate(message, ProtocolOptions(), 4, true, extended, requestedBytes = 255)
+                        if (preview != null) previews += preview
+                        preview != null
+                    }
+                    CompanionMode.CONTROLLER -> BleRuntime.send(
+                        key, page.title, page.text, SYNTHETIC_APP, synthetic = true,
+                        longTextOverride = extended,
+                        probe = BleProbe(run.id, if (run.spec.paged) 0 else run.spec.delayMs, index + 1, run.pages.size),
+                    )
+                }
+                if (!success) break
+                completed++
+            }
+        } finally {
+            if (mode == CompanionMode.SIMULATOR && state.value.mode == mode) {
+                val preview = if (run.spec.paged && previews.isNotEmpty()) {
+                    DisplayPreviewUi("${previews.size}/${run.pages.size}", previews.joinToString("\n") { "${it.title}\n${it.body}" })
+                } else previews.firstOrNull()
+                update { it.copy(preview = preview) }
+            }
+            val outcome = when {
+                completed != run.pages.size -> LengthProbeOutcome.INCOMPLETE
+                mode == CompanionMode.SIMULATOR -> LengthProbeOutcome.SIMULATOR_COMPLETE
+                else -> LengthProbeOutcome.GATT_COMPLETE
+            }
+            if (outcome == LengthProbeOutcome.INCOMPLETE) transportDrops++ else sent++
+            finishLengthRun(run, completed, outcome)
+        }
     }
 
     private suspend fun deliverBleTest(
@@ -551,8 +652,8 @@ internal class CompanionController(private val context: Context) {
         synthetic: Boolean,
         extended: Boolean,
         capability: DisplayCapability? = null,
+        requestedBytes: Int = 1024,
     ): DisplayPreviewUi? {
-        val requestedBytes = 1024
         val simulator = ControllerSimulator(
             mtu = state.value.simulatorMtu,
             requestedTitleBytes = requestedBytes,
@@ -614,7 +715,9 @@ internal class CompanionController(private val context: Context) {
                 queued = queue.size + tests.size,
                 sent = sent,
                 dropped = (stats.expired + stats.overflow).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() + transportDrops,
-                reconnects = reconnects,
+                reconnects = bluetooth?.let {
+                    (it.socialServerRetries + it.settingsRetries).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                } ?: 0,
                 socialMtu = bluetooth?.mtu ?: ui.simulatorMtu.takeIf { ui.mode == CompanionMode.SIMULATOR },
                 socialMtuKnown = bluetooth?.socialMtuKnown == true,
                 configurationMtu = bluetooth?.clientMtu,
@@ -624,6 +727,13 @@ internal class CompanionController(private val context: Context) {
                 lastRequestedBodyBytes = bluetooth?.lastRequestedBodyBytes ?: simulatedSample?.lastRequestedBodyBytes,
                 lastSentTitleBytes = bluetooth?.lastSentTitleBytes ?: simulatedSample?.lastSentTitleBytes,
                 lastSentBodyBytes = bluetooth?.lastSentBodyBytes ?: simulatedSample?.lastSentBodyBytes,
+                notificationSourceSubscribed = bluetooth?.notificationSourceSubscribed,
+                dataSourceSubscribed = bluetooth?.dataSourceSubscribed,
+                requestedBytesTotal = bluetooth?.requestedBytesTotal,
+                declaredBytesTotal = bluetooth?.declaredBytesTotal,
+                sentBytesTotal = bluetooth?.sentBytesTotal,
+                lastDeclaredTitleBytes = bluetooth?.lastDeclaredTitleBytes ?: simulatedSample?.lastSentTitleBytes,
+                lastDeclaredBodyBytes = bluetooth?.lastDeclaredBodyBytes ?: simulatedSample?.lastSentBodyBytes,
             ))
         }
     }

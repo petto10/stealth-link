@@ -109,11 +109,12 @@ internal fun LabPanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
                         } else {
                             BodyNote(capability.instructions())
                         }
-                        val comparison = capability == DisplayCapability.LONG_TEXT || capability == DisplayCapability.SCROLL
-                        if (comparison) {
-                            LongComparisonControls(capability, state.diagnostics, simulator, canRun, onAction)
-                        } else {
-                            OutlinedButton(
+                        when (capability) {
+                            DisplayCapability.LONG_TEXT -> LengthProbeControls(state, canRun, onAction)
+                            DisplayCapability.SCROLL -> LongComparisonControls(
+                                capability, state.diagnostics, simulator, canRun, onAction,
+                            )
+                            else -> OutlinedButton(
                                 enabled = canRun,
                                 onClick = { onAction(UiAction.RunProbe(capability)) },
                             ) { Text(stringResource(R.string.probe_run)) }
@@ -187,7 +188,8 @@ private fun ObservationChoices(current: ProbeObservation, onSelect: (ProbeObserv
 
 @Composable
 private fun DisplayPreview(preview: DisplayPreviewUi?) {
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by remember(preview) { mutableStateOf(false) }
+    var overflow by remember(preview) { mutableStateOf(false) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(25.dp),
@@ -224,6 +226,7 @@ private fun DisplayPreview(preview: DisplayPreviewUi?) {
                             preview.body, color = Color(0xffd0c5dc), style = MaterialTheme.typography.bodyMedium,
                             maxLines = if (expanded) Int.MAX_VALUE else 4,
                             overflow = TextOverflow.Ellipsis,
+                            onTextLayout = { if (!expanded) overflow = it.hasVisualOverflow },
                         )
                         Text(
                             stringResource(
@@ -234,7 +237,7 @@ private fun DisplayPreview(preview: DisplayPreviewUi?) {
                             color = Color(0xffbdb0cf),
                             style = MaterialTheme.typography.labelMedium,
                         )
-                        if (preview.body.length > 120 || preview.body.count { it == '\n' } >= 4) {
+                        if (overflow) {
                             TextButton(
                                 onClick = { expanded = !expanded },
                                 colors = ButtonDefaults.textButtonColors(contentColor = Color(0xffd6beff)),

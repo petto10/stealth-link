@@ -29,6 +29,15 @@ internal class LocalPreferences(context: Context) {
     var extendedText: Boolean
         get() = data.getBoolean("extended_text", false)
         set(value) { data.edit { putBoolean("extended_text", value) } }
+    var notificationsOnly: Boolean
+        get() = data.getBoolean("notifications_only", false)
+        set(value) { data.edit { putBoolean("notifications_only", value) } }
+
+    fun nextLengthProbeId(): Long {
+        val next = data.getLong("last_length_probe_id", 0L) + 1
+        data.edit { putLong("last_length_probe_id", next) }
+        return next
+    }
     var configurationPeer: String?
         get() = data.getString("configuration_peer", null)
         set(value) = set("configuration_peer", value)

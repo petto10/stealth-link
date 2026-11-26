@@ -1,5 +1,7 @@
 package dev.stealthcompanion.ui
 
+import dev.stealthcompanion.core.protocol.LengthProbe
+
 enum class CompanionMode { SIMULATOR, CONTROLLER }
 enum class ControllerRole { CONFIGURATION, SOCIAL, BOTH }
 enum class ConnectionState { IDLE, CONNECTING, WAITING_FOR_SUBSCRIPTION, READY, RETRYING, UNAVAILABLE }
@@ -9,6 +11,7 @@ enum class DisplayCapability {
     AUTO_OPEN, WAKE_DISPLAY, LONG_TEXT, SCROLL, APP_ICONS, CATEGORIES, VIBRATION, DURATION, UPDATE, REMOVAL,
 }
 enum class ProbeObservation { UNTESTED, OBSERVED, NOT_OBSERVED, INCONCLUSIVE }
+enum class LengthProbeOutcome { QUEUED, GATT_COMPLETE, SIMULATOR_COMPLETE, INCOMPLETE }
 enum class UiFeedback {
     TEST_QUEUED, TEST_UNAVAILABLE, PROBE_QUEUED, PROBE_MANUAL, PROBE_UNAVAILABLE,
     SETTINGS_REQUESTED, SETTINGS_UNAVAILABLE,
@@ -48,8 +51,15 @@ data class DiagnosticsUi(
     val configurationMtu: Int? = null,
     val attributeRequests: Int? = null,
     val fragmentsSent: Int? = null,
+    val notificationSourceSubscribed: Boolean? = null,
+    val dataSourceSubscribed: Boolean? = null,
+    val requestedBytesTotal: Long? = null,
+    val declaredBytesTotal: Long? = null,
+    val sentBytesTotal: Long? = null,
     val lastRequestedTitleBytes: Int? = null,
     val lastRequestedBodyBytes: Int? = null,
+    val lastDeclaredTitleBytes: Int? = null,
+    val lastDeclaredBodyBytes: Int? = null,
     val lastSentTitleBytes: Int? = null,
     val lastSentBodyBytes: Int? = null,
 )
@@ -76,6 +86,7 @@ data class StealthUiState(
     val devices: List<ControllerUi> = emptyList(),
     val selectedDeviceId: String? = null,
     val selectedSocialDeviceId: String? = null,
+    val notificationsOnly: Boolean = false,
     val apps: List<ObservedAppUi> = emptyList(),
     val preview: DisplayPreviewUi? = null,
     val diagnostics: DiagnosticsUi = DiagnosticsUi(),
@@ -84,6 +95,8 @@ data class StealthUiState(
     val relaxedSynthetic: Boolean = false,
     val extendedText: Boolean = false,
     val simulatorMtu: Int = 23,
+    val lastLengthProbeId: Long? = null,
+    val lastLengthProbeOutcome: LengthProbeOutcome? = null,
     val observations: Map<DisplayCapability, ProbeObservation> = emptyMap(),
     val feedback: UiFeedback? = null,
     val theme: ThemeMode = ThemeMode.SYSTEM,
@@ -97,6 +110,7 @@ sealed interface UiAction {
     data object RefreshDevices : UiAction
     data class SelectDevice(val id: String) : UiAction
     data class SelectSocialDevice(val id: String?) : UiAction
+    data class SetNotificationsOnly(val value: Boolean) : UiAction
     data object StartCompanion : UiAction
     data object StopCompanion : UiAction
     data class SetPaused(val value: Boolean) : UiAction
@@ -108,6 +122,8 @@ sealed interface UiAction {
     data class SetExtendedText(val value: Boolean) : UiAction
     data class SetSimulatorMtu(val value: Int) : UiAction
     data class RunProbe(val capability: DisplayCapability, val extended: Boolean? = null) : UiAction
+    data class SendLengthProbe(val spec: LengthProbe, val extended: Boolean) : UiAction
+    data object MarkLengthProbeDetail : UiAction
     data class SetObservation(val capability: DisplayCapability, val value: ProbeObservation) : UiAction
     data object ExportDiagnostics : UiAction
     data object ReadSettings : UiAction

@@ -11,19 +11,20 @@ class SocialSession(
 ) {
     init {
         require(maxRecords in 1..255)
-        require(ttlMillis > 0)
+        require(ttlMillis in 1..MAX_PERSONAL_RETENTION_MS)
     }
 
     private data class Record(
         val key: String,
         val payload: SocialPayload,
         val event: SocialEvent,
-        val createdAt: Long,
+        val expiresAt: Long,
+        val retainMillis: Long,
         val allowLongResponse: Boolean,
     )
 
     private val records = LinkedHashMap<Int, Record>()
-    private val legacyIssuedAt = arrayOfNulls<Long>(256)
+    private val legacyReservedUntil = LongArray(256) { Long.MIN_VALUE }
     private val longResponseOptions = options.copy(
         allowFragmentation = true,
         allowMultipleAttributes = true,
@@ -31,20 +32,25 @@ class SocialSession(
     )
     private var sequence = 0
 
-    /** The long response preference is captured per record without changing its event format or UID. */
+    /**
+     * The long response preference is captured per record without changing its event or UID.
+     * Callers may reserve a record beyond the normal lifetime for an explicitly synthetic probe.
+     */
     fun publish(
         key: String,
         payload: SocialPayload,
         nowMs: Long,
         category: Int = SocialCodec.SOCIAL_CATEGORY,
         allowLongResponse: Boolean = false,
+        retainMillis: Long = ttlMillis,
     ): ByteArray? {
         require(category in 0..11)
+        require(retainMillis in 1..MAX_PROBE_RETENTION_MS)
         expire(nowMs)
         val recordedCategory = if (options.allowCustomCategories) category else SocialCodec.SOCIAL_CATEGORY
         val existing = records.values.lastOrNull { it.key == key }
         if (existing?.payload == payload && existing.event.category == recordedCategory &&
-            existing.allowLongResponse == allowLongResponse) return null
+            existing.allowLongResponse == allowLongResponse && existing.retainMillis == retainMillis) return null
         val event = if (existing != null && options.allowUpdates) {
             existing.event.copy(event = SocialEventId.MODIFIED, category = recordedCategory)
         } else {
@@ -58,8 +64,9 @@ class SocialSession(
         }
         records.remove(event.uid)
         if (records.size >= maxRecords) records.remove(records.keys.first())
-        records[event.uid] = Record(key, payload, event, nowMs, allowLongResponse)
-        if (!options.useFullUid) legacyIssuedAt[event.uid ushr 24] = nowMs
+        val expiresAt = deadline(nowMs, retainMillis)
+        records[event.uid] = Record(key, payload, event, expiresAt, retainMillis, allowLongResponse)
+        reserveLegacyUid(event.uid, expiresAt)
         return SocialCodec.encodeEvent(event)
     }
 
@@ -68,7 +75,7 @@ class SocialSession(
         val recent = records.values.lastOrNull { it.key == key }
         records.entries.removeAll { it.value.key == key }
         return if (recent != null && options.allowRemovals) {
-            if (!options.useFullUid) legacyIssuedAt[recent.event.uid ushr 24] = nowMs
+            reserveLegacyUid(recent.event.uid, deadline(nowMs, recent.retainMillis))
             SocialCodec.encodeEvent(recent.event.copy(event = SocialEventId.REMOVED))
         } else {
             null
@@ -96,12 +103,12 @@ class SocialSession(
 
     fun reset() {
         records.clear()
-        legacyIssuedAt.fill(null)
+        legacyReservedUntil.fill(Long.MIN_VALUE)
         sequence = 0
     }
 
     fun expire(nowMs: Long) {
-        records.entries.removeAll { nowMs - it.value.createdAt >= ttlMillis }
+        records.entries.removeAll { nowMs >= it.value.expiresAt }
     }
 
     private fun allocateUid(nowMs: Long): Int? {
@@ -113,13 +120,26 @@ class SocialSession(
         }
         repeat(256) {
             sequence = (sequence + 1) and 255
-            val issuedAt = legacyIssuedAt[sequence]
-            if (issuedAt == null || nowMs - issuedAt >= ttlMillis) {
+            if (nowMs >= legacyReservedUntil[sequence]) {
                 val uid = sequence shl 24
                 if (uid !in records) return uid
             }
         }
         // A late request must not be confused with one of the most recent 256 events.
         return null
+    }
+
+    private fun reserveLegacyUid(uid: Int, until: Long) {
+        if (options.useFullUid) return
+        val index = uid ushr 24
+        legacyReservedUntil[index] = maxOf(legacyReservedUntil[index], until)
+    }
+
+    private fun deadline(nowMs: Long, interval: Long): Long =
+        if (nowMs > Long.MAX_VALUE - interval) Long.MAX_VALUE else nowMs + interval
+
+    companion object {
+        const val MAX_PERSONAL_RETENTION_MS = 30_000L
+        const val MAX_PROBE_RETENTION_MS = 120_000L
     }
 }

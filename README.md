@@ -2,17 +2,18 @@
 
 [English](README.en.md)
 
-Companion Android indipendente per **Turtle Beach Stealth Ultra**. La versione `0.2.0-alpha` aggiunge un’opzione di trasporto Social esteso per provare più testo sul Command Display e una diagnostica delle dimensioni trasmesse. Il progetto usa Kotlin, Jetpack Compose e Material 3, con interfaccia in italiano e inglese e tema di sistema, chiaro o scuro.
+Companion Android indipendente per **Turtle Beach Stealth Ultra**. La versione `0.2.1-alpha` aggiunge prove di lunghezza e ritmo per capire quanto testo il Command Display mostra nel feed e nel dettaglio. Il progetto usa Kotlin, Jetpack Compose e Material 3, con interfaccia in italiano e inglese e tema di sistema, chiaro o scuro.
 
 ## Cosa include l’alpha
 
 - Inoltro su consenso per qualsiasi app che Android renda accessibile a `NotificationListenerService`. Filtri per canale, contatto e conversazione, gestione di `MessagingStyle`, deduplicazione, accorpamento e avvisi generici a telefono bloccato.
 - Messaggi sintetici con titolo e testo modificabili, simulatore con ricomposizione degli attributi e Laboratorio per osservare il comportamento sul display fisico.
 - Trasporto Social protetto a singolo frame come impostazione iniziale. La modalità estesa è sperimentale, richiede un collegamento protetto e può suddividere il testo in frammenti ATT.
+- Laboratorio con campioni di lunghezza nota, codifiche separate, ritmo tra i frammenti e prova facoltativa di notifiche brevi numerate. Modalità **Connessione solo notifiche** per provare Social senza aprire il client delle impostazioni.
 - Sessione BLE tramite un servizio `connectedDevice`, selezione di dispositivi già associati, tentativi di riconnessione e diagnostica esportabile senza contenuti personali.
 - Lettura di slot attivo, nomi dei dieci slot e proprietà di sistema. Creazione, importazione ed esportazione di profili locali in formato JSON versionato.
 
-La verifica automatica copre simulazione, codec, regole e componenti di archiviazione e lettura. Una prova sul controller con la versione precedente ha confermato la ricezione di notifiche e la resa degli accenti a MTU 23, con testo visibile troncato. La prova A/B della modalità estesa sul controller resta da eseguire. Il collegamento legacy del Laboratorio ammette soltanto messaggi sintetici. Le interrogazioni del controller sono in sola lettura. [Esito fisico e procedura A/B](docs/prove-telefono.md#confronto-ab-a-mtu-23)
+Nella prova fisica con `0.2.0-alpha`, il feed Social ha mostrato più testo in modalità estesa a MTU 23. Due risposte per il corpo hanno completato 254 byte di testo via GATT. La lunghezza nel dettaglio e lo scorrimento restano da misurare. Il collegamento legacy del Laboratorio ammette soltanto messaggi sintetici. Le interrogazioni del controller sono in sola lettura. [Riscontro fisico e procedura A/B](docs/prove-telefono.md#confronto-ab-a-mtu-23)
 
 ## Installa e prova
 
@@ -39,6 +40,6 @@ L’APK di debug si trova in `app/build/outputs/apk/debug/app-debug.apk`, ha ide
 - [Risultati dei test](docs/risultati-test.md)
 - [Firma Android e pubblicazione](docs/firma-release.md)
 - [Changelog](CHANGELOG.md)
-- [Note della versione 0.2.0-alpha](docs/releases/v0.2.0-alpha.md)
+- [Note della versione 0.2.1-alpha](docs/releases/v0.2.1-alpha.md)
 
 Stealth Link è un progetto indipendente. I nomi Turtle Beach e Stealth Ultra identificano il produttore e il dispositivo a cui è destinata la companion.

@@ -49,6 +49,10 @@ internal fun DevicePanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
             }
             if (state.mode == CompanionMode.CONTROLLER) {
                 BodyNote(R.string.mode_controller_note)
+                HorizontalDivider()
+                SwitchRow(R.string.mode_notification_only, state.notificationsOnly, {
+                    onAction(UiAction.SetNotificationsOnly(it))
+                }, R.string.mode_notification_only_note)
             } else {
                 BodyNote(R.string.mode_simulator_note)
             }

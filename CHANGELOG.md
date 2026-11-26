@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1-alpha
+
+- Prove di lunghezza del corpo da 12 a 255 byte e campioni distinti per ASCII, accenti, emoji e ritorni a capo.
+- Ritmo sperimentale dei frammenti da 0 a 300 ms, osservazione delle richieste tardive e fallback facoltativo in avvisi brevi numerati.
+- Connessione solo notifiche per isolare Social dal client GATT delle impostazioni.
+- Marcatore manuale per l’apertura del dettaglio, con esiti GATT e tempi correlabili per prova.
+- Guida aggiornata con le osservazioni sul display della 0.2.0 e l’analisi dei frammenti e delle disconnessioni.
+
+[Note 0.2.1-alpha in italiano e inglese](docs/releases/v0.2.1-alpha.md)
+
 ## 0.2.0-alpha
 
 - Trasporto Social esteso sperimentale sul collegamento protetto. Per impostazione iniziale, ogni attributo usa un singolo frame e le conversazioni mostrano il messaggio più recente.

@@ -53,8 +53,14 @@ data class SocialMessage(
     internal fun renderConversation(entries: List<ConversationEntry>): SocialMessage {
         val update = requireNotNull(conversationUpdate).copy(entries = entries)
         val subject = update.conversation ?: entries.last().sender ?: update.fallbackTitle
-        val title = formatTitle(subject, update.app, update.fallbackText)
-        val body = entries.takeLast(update.format.historyLines).asReversed().joinToString("\n") { entry ->
+        val title = formatTitle(subject, update.app, update.fallbackText, update.format)
+        val newestFirst = entries.takeLast(update.format.historyLines).asReversed()
+        val body = if (update.format == SocialFormat.EXTENDED) {
+            newestFirst.mapIndexed { index, entry ->
+                formatExtendedBody(entry.text, entry.sender, subject, update.app, newestFirst.getOrNull(index - 1)?.sender)
+            }.joinToString(" · ")
+        } else {
+            val entry = newestFirst.first()
             formatBody(entry.text, entry.sender?.takeUnless { it == subject })
         }
         return copy(title = title, body = body, conversationUpdate = update)
@@ -79,7 +85,6 @@ data class ConversationUpdate internal constructor(
 
 object SocialPolicy {
     private const val MAX_MESSAGE_WINDOW = 24
-    private val whitespace = Regex("[\\p{Z}\\s]+")
 
     fun render(
         input: IncomingNotification,
@@ -125,8 +130,13 @@ object SocialPolicy {
         val subject = conversation ?: title ?: sender
         val text = clean(input.text)
         if (subject == null && text == null) return null
-        val body = text?.let { formatBody(it, sender?.takeUnless { it == subject }) }.orEmpty()
-        return SocialMessage(input.key, formatTitle(subject, app, privateText), body, input.packageName)
+        val displayTitle = formatTitle(subject, app, privateText, format)
+        val body = when {
+            text == null -> ""
+            format == SocialFormat.EXTENDED -> formatExtendedBody(text, sender, subject, app)
+            else -> formatBody(text, sender?.takeUnless { it == subject })
+        }
+        return SocialMessage(input.key, displayTitle, body, input.packageName)
     }
 
     private fun conversationEntries(messages: List<ConversationMessage>): List<ConversationEntry> {
@@ -153,7 +163,7 @@ object SocialPolicy {
         return blocked.none(::matches) && (allowed.isEmpty() || allowed.any(::matches))
     }
 
-    private fun normalizeLabel(value: String?): String? = clean(value)?.replace(whitespace, " ")?.lowercase(Locale.ROOT)
+    private fun normalizeLabel(value: String?): String? = clean(value)?.let(::displayLabelKey)
 
     private fun clean(value: String?): String? {
         if (value.isNullOrBlank()) return null
@@ -164,11 +174,38 @@ object SocialPolicy {
     }
 }
 
-private fun formatTitle(subject: String?, app: String?, fallback: String): String = when {
+private fun formatTitle(subject: String?, app: String?, fallback: String, format: SocialFormat): String = when {
     subject == null -> app ?: fallback
+    app != null && format == SocialFormat.EXTENDED && hasDisplayLabel(subject, app) -> subject
     app != null && !subject.equals(app, ignoreCase = true) -> "$subject · $app"
     else -> subject
 }
 
 private fun formatBody(text: String, sender: String?): String =
     if (sender == null) text else "$text — $sender"
+
+private fun formatExtendedBody(
+    text: String,
+    sender: String?,
+    subject: String?,
+    app: String?,
+    previousSender: String? = null,
+): String {
+    if (sender == null || (subject != null && hasDisplayLabel(subject, sender)) ||
+        (app != null && hasDisplayLabel(app, sender)) || hasDisplayLabel(text, sender) ||
+        (previousSender != null && displayLabelKey(previousSender) == displayLabelKey(sender))) {
+        return text
+    }
+    return formatBody(text, sender)
+}
+
+private const val HORIZONTAL_SPACE = "[\\p{Z}\\t]"
+private val inlineLabelSeparator = Regex("\\n|$HORIZONTAL_SPACE*[:·|]$HORIZONTAL_SPACE+|$HORIZONTAL_SPACE+[-–—]$HORIZONTAL_SPACE+")
+private val displayLabelWhitespace = Regex("[\\p{Z}\\s]+")
+
+private fun hasDisplayLabel(value: String, label: String): Boolean {
+    val expected = displayLabelKey(label)
+    return displayLabelKey(value) == expected || inlineLabelSeparator.splitToSequence(value).any { displayLabelKey(it) == expected }
+}
+
+private fun displayLabelKey(value: String): String = value.trim().replace(displayLabelWhitespace, " ").lowercase(Locale.ROOT)

@@ -2,17 +2,18 @@
 
 [Italiano](README.md)
 
-An independent Android companion for the **Turtle Beach Stealth Ultra**. Version `0.2.0-alpha` adds an extended Social transport option for testing longer text on the Command Display and diagnostics for transmitted sizes. The app uses Kotlin, Jetpack Compose, and Material 3, with Italian and English interfaces and system, light, and dark themes.
+An independent Android companion for the **Turtle Beach Stealth Ultra**. Version `0.2.1-alpha` adds length and pacing tests to measure how much text the Command Display shows in the feed and detail view. The app uses Kotlin, Jetpack Compose, and Material 3, with Italian and English interfaces and system, light, and dark themes.
 
 ## Alpha features
 
 - Opt-in forwarding for any app whose notifications Android exposes to `NotificationListenerService`. Filters by channel, contact, and conversation, `MessagingStyle` extraction, deduplication, coalescing, and generic alerts while the phone is locked.
 - Custom synthetic test messages, a simulator that reassembles protocol attributes, and a Lab for recording observations on the physical display.
 - Protected single-frame Social transport by default. Extended transport is experimental, requires a protected link, and can split text across ATT fragments.
+- A Lab with known-length samples, separate encoding tests, configurable fragment pacing, and optional short numbered notifications. **Notifications-only connection** mode lets you test Social without opening the settings client.
 - BLE session in a `connectedDevice` service, selection of previously paired devices, reconnection attempts, and exportable diagnostics free of personal content.
 - Read-only access to the active slot, ten slot names, and system properties. Local profiles with versioned JSON backup, import, and export.
 
-Automated tests cover the simulator, codec, rules, storage, and read-only query components. A physical test with the previous version confirmed notifications and correct accented characters at MTU 23, with truncated visible text. An on-device A/B test of extended transport is pending. The legacy Lab link accepts synthetic content only. Controller queries are read-only. [Physical test result and A/B procedure in Italian](docs/prove-telefono.md#confronto-ab-a-mtu-23)
+A physical test with `0.2.0-alpha` showed more text in the Social feed in extended mode at MTU 23. Two body responses completed 254 bytes of text over GATT. The visible length in the detail view and scrolling still need to be measured. The legacy Lab link accepts synthetic content only. Controller queries are read-only. [Physical test result and A/B procedure in Italian](docs/prove-telefono.md#confronto-ab-a-mtu-23)
 
 ## Install and try
 
@@ -39,6 +40,6 @@ The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`, uses applicatio
 - [Test results](docs/risultati-test.md)
 - [Signing and releases in Italian](docs/firma-release.md)
 - [Changelog](CHANGELOG.md)
-- [Version 0.2.0-alpha release notes](docs/releases/v0.2.0-alpha.md)
+- [Version 0.2.1-alpha release notes](docs/releases/v0.2.1-alpha.md)
 
 Stealth Link is an independent project. Turtle Beach and Stealth Ultra identify the manufacturer and target device.

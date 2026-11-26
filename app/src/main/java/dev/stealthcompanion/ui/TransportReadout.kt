@@ -23,25 +23,59 @@ internal fun TransportReadout(diagnostics: DiagnosticsUi, mode: CompanionMode) {
         else -> R.string.diagnostic_default_mtu
     }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        DiagnosticValue(socialMtuLabel, diagnostics.socialMtu ?: diagnostics.mtu)
+        DiagnosticNumber(socialMtuLabel, diagnostics.socialMtu ?: diagnostics.mtu)
         if (mode == CompanionMode.CONTROLLER) {
-            DiagnosticValue(R.string.diagnostic_config_mtu, diagnostics.configurationMtu)
+            DiagnosticNumber(R.string.diagnostic_config_mtu, diagnostics.configurationMtu)
+            DiagnosticValue(
+                R.string.diagnostic_notification_subscription,
+                subscriptionLabel(diagnostics.notificationSourceSubscribed),
+            )
+            DiagnosticValue(
+                R.string.diagnostic_data_subscription,
+                subscriptionLabel(diagnostics.dataSourceSubscribed),
+            )
         }
-        DiagnosticValue(R.string.diagnostic_requests, diagnostics.attributeRequests)
-        DiagnosticValue(R.string.diagnostic_fragments, diagnostics.fragmentsSent)
+        DiagnosticNumber(R.string.diagnostic_requests, diagnostics.attributeRequests)
+        DiagnosticNumber(R.string.diagnostic_fragments, diagnostics.fragmentsSent)
+    }
+    if (listOf(diagnostics.requestedBytesTotal, diagnostics.declaredBytesTotal, diagnostics.sentBytesTotal)
+            .any { it != null }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                stringResource(R.string.diagnostic_cumulative_lengths),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            DiagnosticNumber(R.string.diagnostic_cumulative_requested, diagnostics.requestedBytesTotal)
+            DiagnosticNumber(R.string.diagnostic_cumulative_declared, diagnostics.declaredBytesTotal)
+            DiagnosticNumber(R.string.diagnostic_cumulative_sent, diagnostics.sentBytesTotal)
+        }
     }
     AttributeReadout(diagnostics)
 }
 
 @Composable
-private fun DiagnosticValue(@StringRes label: Int, value: Int?) {
+private fun subscriptionLabel(subscribed: Boolean?): String? = when (subscribed) {
+    true -> stringResource(R.string.diagnostic_subscription_active)
+    false -> stringResource(R.string.diagnostic_subscription_inactive)
+    null -> null
+}
+
+@Composable
+private fun DiagnosticNumber(@StringRes label: Int, value: Number?) {
+    DiagnosticValue(label, value?.toString())
+}
+
+@Composable
+private fun DiagnosticValue(@StringRes label: Int, value: String?) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             stringResource(label),
             Modifier.weight(1f),
             style = MaterialTheme.typography.bodyMedium,
         )
-        Text(value?.toString() ?: "—", style = MaterialTheme.typography.labelLarge)
+        Text(value ?: "—", style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -54,48 +88,43 @@ internal fun AttributeReadout(diagnostics: DiagnosticsUi) {
             fontWeight = FontWeight.SemiBold,
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                stringResource(R.string.diagnostic_attribute),
-                Modifier.weight(1f),
-                style = MaterialTheme.typography.labelMedium,
+            val cols = listOf(
+                R.string.diagnostic_attribute,
+                R.string.diagnostic_attribute_requested,
+                R.string.diagnostic_attribute_declared,
+                R.string.diagnostic_attribute_sent,
             )
-            Text(
-                stringResource(R.string.diagnostic_attribute_requested),
-                Modifier.weight(1f),
-                style = MaterialTheme.typography.labelMedium,
-                textAlign = TextAlign.End,
-            )
-            Text(
-                stringResource(R.string.diagnostic_attribute_sent),
-                Modifier.weight(1f),
-                style = MaterialTheme.typography.labelMedium,
-                textAlign = TextAlign.End,
-            )
+            cols.forEachIndexed { index, column ->
+                Text(
+                    stringResource(column),
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium,
+                    textAlign = if (index == 0) TextAlign.Start else TextAlign.End,
+                )
+            }
         }
         AttributeLengthsRow(
-            R.string.synthetic_title_field, diagnostics.lastRequestedTitleBytes, diagnostics.lastSentTitleBytes,
+            R.string.synthetic_title_field, diagnostics.lastRequestedTitleBytes,
+            diagnostics.lastDeclaredTitleBytes, diagnostics.lastSentTitleBytes,
         )
         AttributeLengthsRow(
-            R.string.synthetic_body_field, diagnostics.lastRequestedBodyBytes, diagnostics.lastSentBodyBytes,
+            R.string.synthetic_body_field, diagnostics.lastRequestedBodyBytes,
+            diagnostics.lastDeclaredBodyBytes, diagnostics.lastSentBodyBytes,
         )
     }
 }
 
 @Composable
-private fun AttributeLengthsRow(@StringRes label: Int, requested: Int?, sent: Int?) {
+private fun AttributeLengthsRow(@StringRes label: Int, requested: Int?, declared: Int?, sent: Int?) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(stringResource(label), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-        Text(
-            requested?.toString() ?: "—",
-            Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.End,
-        )
-        Text(
-            sent?.toString() ?: "—",
-            Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.End,
-        )
+        listOf(requested, declared, sent).forEach { value ->
+            Text(
+                value?.toString() ?: "—",
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.End,
+            )
+        }
     }
 }

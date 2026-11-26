@@ -99,4 +99,60 @@ class BleFrameQueueTest {
         assertEquals("T1", queue.complete())
         assertNull(queue.launchNext())
     }
+
+    @Test
+    fun pacingStartsAtThePreviousSuccessCallbackAndIsOnlyWithinItsResponse() {
+        val queue = BleFrameQueue<String>(8, 40) { it.length }
+        assertTrue(queue.offerBatch(listOf("t1", "t2", "t3"), spacingMillis = 50))
+        assertTrue(queue.offerBatch(listOf("body"), spacingMillis = 300))
+        assertTrue(queue.offerBatch(listOf("notice")))
+        assertEquals("t1", queue.launchNext(100))
+        assertEquals(0L, queue.remainingDelayMillis(150))
+        assertNull(queue.launchNext(200))
+        assertEquals("t1", queue.complete(215))
+        assertEquals(50L, queue.remainingDelayMillis(215))
+        assertEquals(1L, queue.remainingDelayMillis(264))
+        assertNull(queue.launchNext(264))
+        assertEquals("t2", queue.launchNext(265))
+        assertEquals("t2", queue.complete(267))
+        assertNull(queue.launchNext(316))
+        assertEquals("t3", queue.launchNext(317))
+        assertEquals("t3", queue.complete(318))
+        assertEquals("body", queue.launchNext(318))
+        assertEquals("body", queue.complete(319))
+        assertEquals("notice", queue.launchNext(319))
+    }
+
+    @Test
+    fun abandoningAPacedContinuationBlocksLaterResponsesEvenWithoutAnInFlightFrame() {
+        val queue = BleFrameQueue<String>(5, 40) { it.length }
+        assertTrue(queue.offerBatch(listOf("body1", "body2"), spacingMillis = 300))
+        assertTrue(queue.offerBatch(listOf("title")))
+        assertEquals("body1", queue.launchNext(0))
+        assertEquals("body1", queue.complete(100))
+        assertTrue(queue.hasStartedBatch)
+        assertNull(queue.inFlight)
+        assertNull(queue.launchNext(200))
+        assertTrue(queue.discardQueued { it == "body2" })
+        assertNull(queue.launchNext(401))
+        queue.clear()
+        assertFalse(queue.hasStartedBatch)
+        assertTrue(queue.offerBatch(listOf("new")))
+        assertEquals("new", queue.launchNext(401))
+    }
+
+    @Test
+    fun aQueueResetClearsPacingEvenWhenTheNextResponseHasTheSameDelay() {
+        val queue = BleFrameQueue<String>(4, 20) { it.length }
+        assertTrue(queue.offerBatch(listOf("old1", "old2"), spacingMillis = 100))
+        assertEquals("old1", queue.launchNext(10))
+        assertEquals("old1", queue.complete(20))
+        assertEquals(90L, queue.remainingDelayMillis(30))
+        queue.clear()
+        assertTrue(queue.offerBatch(listOf("new1", "new2"), spacingMillis = 100))
+        assertEquals("new1", queue.launchNext(30))
+        assertEquals("new1", queue.complete(40))
+        assertNull(queue.launchNext(139))
+        assertEquals("new2", queue.launchNext(140))
+    }
 }

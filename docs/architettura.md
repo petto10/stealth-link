@@ -1,6 +1,6 @@
 # Architettura · Stealth Link
 
-Stealth Link 0.2 collega il listener Android a un motore Kotlin puro e a un trasporto selezionabile. Un servizio Android di tipo `connectedDevice` mantiene il collegamento reale indipendente dall’Activity. La sessione reale si attiva dall’interfaccia e rimane soggetta alle regole del sistema e del produttore del telefono.
+Stealth Link 0.2.1 collega il listener Android a un motore Kotlin puro e a un trasporto selezionabile. Un servizio Android di tipo `connectedDevice` mantiene il collegamento reale indipendente dall’Activity. La sessione reale si attiva dall’interfaccia e rimane soggetta alle regole del sistema e del produttore del telefono.
 
 | Componente | Compito |
 |---|---|
@@ -16,13 +16,15 @@ Stealth Link 0.2 collega il listener Android a un motore Kotlin puro e a un tras
 
 Il telefono è il server GATT per Social e il client GATT per le impostazioni. La forma Social predefinita usa un evento di aggiunta, la categoria Social, un UID con otto bit variabili e una risposta a singolo frame per attributo. L’opzione persistente **Testo esteso (sperimentale)** permette di inviare più frammenti, mantenendo evento e schema dell’UID. La scelta del trasporto si fissa alla creazione del record. Il server dimensiona i frame in base al proprio callback MTU e usa 23 in attesa del valore negoziato. Il client delle impostazioni tenta una richiesta MTU quando l’opzione è attiva e la sessione delle impostazioni è già connessa allo stesso peer approvato. Il client e il server riportano i propri MTU separatamente. [Protocollo Bluetooth](protocollo-bluetooth.md)
 
-Il Laboratorio invia lo stesso campione A/B con due modalità di trasporto. Le prove di identificatore e nome app, categorie, aggiornamento e rimozione usano campioni sintetici. Il simulatore emette le richieste e ricompone le risposte a MTU 23, 64 o 185. Apertura del feed, scorrimento, risveglio e altri comportamenti del display si misurano sul controller. [Guida A/B](prove-telefono.md#confronto-ab-a-mtu-23)
+**Solo notifiche** registra esclusivamente il server Social e attende il collegamento del controller. In modalità normale il client delle impostazioni ha un proprio ciclo di riconnessione. Il server resta registrato quando il client fallisce, così un tentativo delle impostazioni non ricrea il servizio Social. Sullo stesso collegamento fisico Android può comunque riportare eventi a entrambi i ruoli. L’attesa Social è passiva quando il controller è spento o sospeso.
+
+Il Laboratorio invia lo stesso campione A/B con due modalità di trasporto. Può cambiare il ritardo tra frammenti o inviare più notifiche sintetiche numerate. Le prove di identificatore e nome app, categorie, aggiornamento e rimozione usano campioni sintetici. Il simulatore emette le richieste e ricompone le risposte a MTU 23, 64 o 185. Apertura del feed, scorrimento, risveglio e altri comportamenti del display si misurano sul controller. [Guida A/B](prove-telefono.md#confronto-ab-a-mtu-23)
 
 ## Percorso delle notifiche
 
-1. Il listener estrae i campi disponibili da `MessagingStyle` e dagli extra Android. Il motore applica le regole per sorgente, canale, conversazione e contatto prima di formare la notifica. Il titolo può includere il nome dell’app. Il corpo compatto conserva il messaggio più recente. Il formato esteso può includerne fino a tre, dal più recente.
+1. Il listener estrae i campi disponibili da `MessagingStyle` e dagli extra Android. Il motore applica le regole per sorgente, canale, conversazione e contatto prima di formare la notifica. Il titolo può includere il nome dell’app. Il corpo compatto conserva il messaggio più recente. Il formato esteso può includerne fino a tre, dal più recente, separati da ` · `. Conserva i ritorni a capo del testo originale. Il mittente segue il contenuto quando aggiunge informazione.
 2. La coda tiene in memoria fino a 32 eventi, usa una finestra di 350 ms per accorpare gli aggiornamenti e scade il contenuto in attesa dopo 30 secondi. La deduplicazione delle conversazioni usa identificatori derivati e limitati per cinque minuti. Gli aggiornamenti sostituiscono una voce in coda conservandone l’ordine. Il tentativo di consegna di esito ambiguo rimane segnato nella deduplicazione.
-3. Il trasporto invia un evento Social alla volta e conserva il record per le richieste di titolo e corpo. Le risposte rispettano sia il limite chiesto dal controller sia quello applicativo. In modalità estesa ogni risposta è divisa in frammenti ATT e inviata in ordine aspettando i callback GATT. Il contenuto del record scade. La visualizzazione è verificata sul display.
+3. Il trasporto invia un evento Social alla volta e conserva il record per le richieste di titolo e corpo. Le risposte rispettano sia il limite chiesto dal controller sia quello applicativo. In modalità estesa ogni risposta è divisa in frammenti ATT e inviata in ordine aspettando i callback GATT. I record ordinari scadono dopo 30 secondi. I campioni di lunghezza possono rispondere a nuove richieste fino a 120 secondi entro la stessa sessione e la capacità della cache. La visualizzazione richiede una verifica sul display.
 
 ## Protezione e diagnostica
 

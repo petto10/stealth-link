@@ -78,7 +78,7 @@ class SocialPolicyTest {
             conversation = "Gruppo",
             messages = (5 downTo 1).map { ConversationMessage(null, "Msg $it", it.toLong()) },
         )
-        assertEquals("Msg 5\nMsg 4\nMsg 3", SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)?.body)
+        assertEquals("Msg 5 · Msg 4 · Msg 3", SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)?.body)
     }
 
     @Test
@@ -87,8 +87,57 @@ class SocialPolicyTest {
         val notification = source.copy(messages = listOf(note, note, note.copy(text = "Modificata", timestamp = 2)))
         val message = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
         assertEquals("Ada · Esempio", message?.title)
-        assertEquals("Modificata\nPrima", message?.body)
+        assertEquals("Modificata · Prima", message?.body)
         assertEquals(2, message?.conversationUpdate?.entries?.size)
+    }
+
+    @Test
+    fun extendedAvoidsDuplicatingAppOrSenderAlreadyPresentInTheTitle() {
+        val notification = source.copy(title = "ESEMPIO: Prove", sender = "Esempio")
+        val extended = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
+        assertEquals("ESEMPIO: Prove", extended?.title)
+        assertEquals("Ciao", extended?.body)
+
+        val compact = SocialPolicy.render(notification, allowed)
+        assertEquals("ESEMPIO: Prove · Esempio", compact?.title)
+        assertEquals("Ciao — Esempio", compact?.body)
+    }
+
+    @Test
+    fun extendedAvoidsRepeatingAFullSourceTitleUsedAsSenderFallback() {
+        val notification = source.copy(title = "Rete: ufficio", sender = "Rete: ufficio")
+        val extended = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
+        assertEquals("Rete: ufficio · Esempio", extended?.title)
+        assertEquals("Ciao", extended?.body)
+    }
+
+    @Test
+    fun extendedPreservesSourceSenderFormattingAndConsecutiveGroupContext() {
+        val notification = source.copy(
+            conversation = "Squadra A",
+            messages = listOf(
+                ConversationMessage("Pino", "Da Pino", 1),
+                ConversationMessage("Ada Rossi", "Poi al campo", 2),
+                ConversationMessage("ADA\u00a0ROSSI", "Ada Rossi: Caffè pronto\nGià qui ☕", 3),
+            ),
+        )
+        val extended = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
+        assertEquals("Squadra A · Esempio", extended?.title)
+        assertEquals("Ada Rossi: Caffè pronto\nGià qui ☕ · Poi al campo · Da Pino — Pino", extended?.body)
+    }
+
+    @Test
+    fun extendedPlacesNewContentBeforeSenderAndKeepsUnrelatedAppAndGroup() {
+        val notification = source.copy(
+            conversation = "Squadra",
+            messages = listOf(
+                ConversationMessage("Nora", "Prima", 1),
+                ConversationMessage("Ada", "Caffè pronto · già qui", 2),
+            ),
+        )
+        val extended = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
+        assertEquals("Squadra · Esempio", extended?.title)
+        assertEquals("Caffè pronto · già qui — Ada · Prima — Nora", extended?.body)
     }
 
     @Test

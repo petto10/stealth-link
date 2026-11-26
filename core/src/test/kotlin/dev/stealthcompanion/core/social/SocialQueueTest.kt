@@ -119,7 +119,7 @@ class SocialQueueTest {
         val second = ConversationMessage("Lea", "Seconda", 2)
         val third = ConversationMessage("Ada", "Terza", 3)
         assertTrue(queue.offer(conversation(first, second), 0))
-        assertEquals("Seconda — Lea\nPrima — Ada", queue.poll(0)?.body)
+        assertEquals("Seconda — Lea · Prima — Ada", queue.poll(0)?.body)
         assertTrue(queue.offer(conversation(first, second, third), 60_000))
         val next = requireNotNull(queue.poll(60_000))
         assertEquals("Terza — Ada", next.body)
@@ -163,7 +163,7 @@ class SocialQueueTest {
         queue.poll(10)
         assertTrue(queue.offer(conversation(a, b), 11))
         assertTrue(queue.offer(conversation(a, b, c), 12))
-        assertEquals("Terza — Ada\nSeconda — Lea", queue.poll(21)?.body)
+        assertEquals("Terza — Ada · Seconda — Lea", queue.poll(21)?.body)
         assertNull(queue.poll(22))
     }
 

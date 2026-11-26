@@ -244,15 +244,19 @@ object SocialCodec {
     /** Encode a bounded prefix without splitting extended grapheme clusters. */
     fun encodeUtf8Within(value: String, maximumBytes: Int): ByteArray {
         if (maximumBytes <= 0 || value.isEmpty()) return ByteArray(0)
-        val characters = grapheme.matcher(value)
         val result = ByteArrayOutputStream(minOf(maximumBytes, 512))
-        while (characters.find()) {
+        for (character in graphemes(value)) {
             // UTF-8 encoding needs at least as many bytes as the number of UTF-16 units.
-            if (characters.end() - characters.start() > maximumBytes - result.size()) break
-            val segment = characters.group().toByteArray(Charsets.UTF_8)
+            if (character.length > maximumBytes - result.size()) break
+            val segment = character.toByteArray(Charsets.UTF_8)
             if (segment.size > maximumBytes - result.size()) break
             result.write(segment)
         }
         return result.toByteArray()
+    }
+
+    internal fun graphemes(value: String): Sequence<String> = sequence {
+        val characters = grapheme.matcher(value)
+        while (characters.find()) yield(characters.group())
     }
 }
