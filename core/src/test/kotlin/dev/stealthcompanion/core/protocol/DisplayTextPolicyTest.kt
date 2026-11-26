@@ -9,15 +9,15 @@ import org.junit.Test
 
 class DisplayTextPolicyTest {
     @Test
-    fun defaultRetains112BytesAndSignalsClippingInsideTheLimit() {
+    fun defaultRetains110BytesAndSignalsClippingInsideTheLimit() {
         val title = "Titolo originale"
-        val exact = SocialPayload(title, "x".repeat(112))
+        val exact = SocialPayload(title, "x".repeat(110))
         assertEquals(DisplayTextPlan(listOf(exact), false), DisplayTextPolicy().render(exact))
         val overflow = exact.copy(text = exact.text + "!")
         val result = DisplayTextPolicy().render(overflow)
         assertTrue(result.truncated)
-        assertEquals(SocialPayload(title, "x".repeat(109) + "..."), result.pages.single())
-        assertEquals(112, result.pages.single().text.toByteArray().size)
+        assertEquals(SocialPayload(title, "x".repeat(107) + "..."), result.pages.single())
+        assertEquals(110, result.pages.single().text.toByteArray().size)
     }
 
     @Test
@@ -38,8 +38,8 @@ class DisplayTextPolicyTest {
         val result = DisplayTextPolicy(12, paged = true).render(payload)
         assertFalse(result.truncated)
         assertEquals(listOf("alpha beta ", "gamma delta"), result.pages.map { it.text })
-        assertEquals(listOf("1/2 Città ", "2/2 Città "), result.pages.map { it.title })
-        assertTrue(result.pages.all { it.title.toByteArray().size <= 12 })
+        assertEquals(listOf("1/2 Città 🙂 editoriale", "2/2 Città 🙂 editoriale"), result.pages.map { it.title })
+        assertTrue(result.pages.all { it.title.toByteArray().size <= 32 })
         assertTrue(result.pages.all { it.appIdentifier == "dev.app" && it.applicationName == "App" })
     }
 
@@ -49,6 +49,53 @@ class DisplayTextPolicyTest {
         val result = DisplayTextPolicy(10, paged = true, maxPages = 2).render(SocialPayload("Titolo", body))
         assertFalse(result.truncated)
         assertEquals(listOf("alpha bbbb", "b".repeat(10)), result.pages.map { it.text })
+    }
+
+    @Test
+    fun paginationUsesAnExtraPageWhenThatAvoidsBreakingAWord() {
+        val words = listOf("a".repeat(40) + " ", "b".repeat(40) + " ", "c".repeat(40))
+        val body = words.joinToString("")
+        val payload = SocialPayload("Titolo", body)
+        val natural = DisplayTextPolicy(64, paged = true, maxPages = 3).render(payload)
+        assertEquals(words, natural.pages.map { it.text })
+        assertFalse(natural.truncated)
+        val bounded = DisplayTextPolicy(64, paged = true, maxPages = 2).render(payload)
+        assertEquals(2, bounded.pages.size)
+        assertEquals(body, bounded.pages.joinToString("") { it.text })
+        assertFalse(bounded.truncated)
+    }
+
+    @Test
+    fun senderComesFirstOnEveryPageAndKeepsItsGraphemes() {
+        val payload = SocialPayload("Gruppo · Giada · Telefono", "abcdefghijklmnopqrstuvwxyz")
+        val policy = DisplayTextPolicy(16, paged = true)
+        val pages = policy.render(payload, sender = "Giada").pages
+        assertEquals(listOf("1/2 Giada · Gruppo · Telefono", "2/2 Giada · Gruppo · Telefono"), pages.map { it.title })
+        val namePrefix = "È".repeat(12)
+        val longName = namePrefix + "👋🏽 Z"
+        val clippedTitles = policy.render(payload, sender = longName).pages.map { it.title }
+        assertEquals(listOf("1/2 $namePrefix", "2/2 $namePrefix"), clippedTitles)
+        assertTrue(clippedTitles.all { it.toByteArray().size <= 32 })
+        assertEquals(payload.title, DisplayTextPolicy().render(payload, sender = longName).pages.single().title)
+        assertEquals(payload.title, policy.render(payload.copy(text = "short"), sender = longName).pages.single().title)
+    }
+
+    @Test
+    fun compactOnlyFlattensLineBreaksAndPreservesUnicodeAtTheBodyEnd() {
+        val unicodeEnd = "👋🏽è"
+        val body = "Prima  \r\n\n   dopo\u2028 ancora\u0085$unicodeEnd"
+        val payload = SocialPayload("Titolo", body)
+        val multiline = DisplayTextPolicy(40, paged = true).render(payload)
+        assertEquals(body, multiline.pages.joinToString("") { it.text })
+        val compact = DisplayTextPolicy(40, paged = true, compactLines = true).render(payload)
+        assertEquals("Prima dopo ancora $unicodeEnd", compact.pages.joinToString("") { it.text })
+        assertFalse(multiline.truncated)
+        assertFalse(compact.truncated)
+
+        val nearLimit = "a".repeat(98) + unicodeEnd + "Ωz"
+        val clipped = DisplayTextPolicy().render(payload.copy(text = nearLimit))
+        assertEquals("a".repeat(98) + "👋🏽...", clipped.pages.single().text)
+        assertTrue(clipped.truncated)
     }
 
     @Test

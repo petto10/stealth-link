@@ -153,6 +153,7 @@ private fun RuleDialog(app: ObservedAppUi, onDismiss: () -> Unit, onSave: (RuleU
     var enabled by remember { mutableStateOf(app.rule.enabled) }
     var silent by remember { mutableStateOf(app.rule.allowSilent) }
     var appName by remember { mutableStateOf(app.rule.includeAppName) }
+    var paginate by remember { mutableStateOf(app.rule.paginate) }
     var channels by remember { mutableStateOf(app.rule.allowedChannels.linesForEdit()) }
     var allowedContacts by remember { mutableStateOf(app.rule.allowedContacts.linesForEdit()) }
     var blockedContacts by remember { mutableStateOf(app.rule.blockedContacts.linesForEdit()) }
@@ -168,7 +169,8 @@ private fun RuleDialog(app: ObservedAppUi, onDismiss: () -> Unit, onSave: (RuleU
             ) {
                 SwitchRow(R.string.rule_enable, enabled, { enabled = it })
                 SwitchRow(R.string.rule_silent, silent, { silent = it })
-                SwitchRow(R.string.rule_app_name, appName, { appName = it })
+                SwitchRow(R.string.rule_app_name, appName, { appName = it }, R.string.rule_title_note)
+                SwitchRow(R.string.rule_paginate, paginate, { paginate = it }, R.string.rule_paginate_note)
                 HorizontalDivider()
                 BodyNote(R.string.rule_format)
                 RuleField(R.string.rule_channels, channels, { channels = it })
@@ -190,14 +192,15 @@ private fun RuleDialog(app: ObservedAppUi, onDismiss: () -> Unit, onSave: (RuleU
             TextButton(onClick = {
                 onSave(
                     RuleUi(
-                        enabled,
-                        silent,
-                        appName,
-                        channels.rulesFromLines(),
-                        allowedContacts.rulesFromLines(),
-                        blockedContacts.rulesFromLines(),
-                        allowedConversations.rulesFromLines(),
-                        blockedConversations.rulesFromLines(),
+                        enabled = enabled,
+                        allowSilent = silent,
+                        includeAppName = appName,
+                        allowedChannels = channels.rulesFromLines(),
+                        allowedContacts = allowedContacts.rulesFromLines(),
+                        blockedContacts = blockedContacts.rulesFromLines(),
+                        allowedConversations = allowedConversations.rulesFromLines(),
+                        blockedConversations = blockedConversations.rulesFromLines(),
+                        paginate = paginate,
                     ),
                 )
             }) { Text(stringResource(R.string.action_save)) }

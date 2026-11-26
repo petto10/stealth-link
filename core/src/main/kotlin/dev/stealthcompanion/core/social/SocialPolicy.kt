@@ -28,6 +28,7 @@ data class IncomingNotification(
     val timestamp: Long = 0,
     val conversationId: String? = null,
     val contactId: String? = null,
+    val senderIsExplicit: Boolean = false,
 )
 
 data class AppRule(
@@ -49,6 +50,7 @@ data class SocialMessage(
     val packageName: String? = null,
     val conversationUpdate: ConversationUpdate? = null,
     val deliveryKey: String = key,
+    val sender: String? = null,
 ) {
     internal fun renderConversation(entries: List<ConversationEntry>): SocialMessage {
         val update = requireNotNull(conversationUpdate).copy(entries = entries)
@@ -63,7 +65,8 @@ data class SocialMessage(
             val entry = newestFirst.first()
             formatBody(entry.text, entry.sender?.takeUnless { it == subject })
         }
-        return copy(title = title, body = body, conversationUpdate = update)
+        val senderHint = newestFirst.first().sender.takeIf { update.includeSenderHint }
+        return copy(title = title, body = body, conversationUpdate = update, sender = senderHint)
     }
 }
 
@@ -81,6 +84,7 @@ data class ConversationUpdate internal constructor(
     val app: String?,
     val format: SocialFormat,
     val fallbackText: String,
+    val includeSenderHint: Boolean,
 )
 
 object SocialPolicy {
@@ -125,9 +129,10 @@ object SocialPolicy {
             return SocialMessage(input.key, app ?: privateText, privateText, input.packageName)
         }
 
+        val includeSenderHint = format == SocialFormat.EXTENDED && !locked
         if (messages.isNotEmpty()) {
             val entries = conversationEntries(messages)
-            val update = ConversationUpdate(entries, conversation, title ?: sender, app, format, privateText)
+            val update = ConversationUpdate(entries, conversation, title ?: sender, app, format, privateText, includeSenderHint)
             return SocialMessage(input.key, "", "", input.packageName, update).renderConversation(entries)
         }
 
@@ -140,7 +145,8 @@ object SocialPolicy {
             format == SocialFormat.EXTENDED -> formatExtendedBody(text, sender, subject, app)
             else -> formatBody(text, sender?.takeUnless { it == subject })
         }
-        return SocialMessage(input.key, displayTitle, body, input.packageName)
+        val senderHint = sender.takeIf { includeSenderHint && input.senderIsExplicit }
+        return SocialMessage(input.key, displayTitle, body, input.packageName, sender = senderHint)
     }
 
     private fun conversationEntries(messages: List<ConversationMessage>): List<ConversationEntry> {

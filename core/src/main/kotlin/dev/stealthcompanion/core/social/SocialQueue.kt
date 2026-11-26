@@ -55,7 +55,10 @@ class SocialQueue(
         }
         val candidate = unseen?.let(message::renderConversation) ?: message
         val digest = fingerprint(candidate)
-        if (previous?.digest == digest) return duplicate()
+        if (previous?.digest == digest) {
+            if (previous.message.sender != candidate.sender) pending[message.key] = previous.copy(message = candidate)
+            return duplicate()
+        }
         if (update == null && sent != null && sent.expiresAt > now && sent.digest == digest) {
             // The source can revert to an alert already seen while an update waits in the queue.
             pending.remove(message.key)

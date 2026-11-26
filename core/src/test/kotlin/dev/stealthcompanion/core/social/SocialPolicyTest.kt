@@ -180,6 +180,44 @@ class SocialPolicyTest {
     }
 
     @Test
+    fun onlyExtendedUnlockedOutputExposesAnExplicitSenderHint() {
+        val unconfirmed = source.copy(sender = "Ada  Rossi")
+        val confirmed = unconfirmed.copy(senderIsExplicit = true)
+        assertNull(SocialPolicy.render(unconfirmed, allowed, format = SocialFormat.EXTENDED)?.sender)
+        assertNull(SocialPolicy.render(confirmed, allowed)?.sender)
+        assertEquals("Ada Rossi", SocialPolicy.render(confirmed, allowed, format = SocialFormat.EXTENDED)?.sender)
+        assertNull(SocialPolicy.render(confirmed, allowed, locked = true, format = SocialFormat.EXTENDED)?.sender)
+        val unlockedContents = SocialPolicy.render(
+            confirmed, allowed, locked = true, privateWhenLocked = false, format = SocialFormat.EXTENDED,
+        )
+        assertEquals("Ciao — Ada Rossi", unlockedContents?.body)
+        assertNull(unlockedContents?.sender)
+    }
+
+    @Test
+    fun groupHintComesOnlyFromNewestAllowedEntryWithoutFallingBackToAndroidTitle() {
+        val group = source.copy(
+            title = "Unknown title",
+            sender = "Blocked",
+            senderIsExplicit = true,
+            conversation = "Squadra",
+            messages = listOf(
+                ConversationMessage("Ada", "Primo", 1),
+                ConversationMessage(null, "Anonimo", 2),
+                ConversationMessage("Blocked", "Riservato", 3),
+            ),
+        )
+        val rule = allowed.copy(blockedContacts = setOf("Blocked"))
+        val rendered = SocialPolicy.render(group, rule, format = SocialFormat.EXTENDED)
+        assertEquals("Anonimo · Primo — Ada", rendered?.body)
+        assertNull(rendered?.sender)
+
+        val known = group.copy(messages = group.messages.filterNot { it.sender == null })
+        assertEquals("Ada", SocialPolicy.render(known, rule, format = SocialFormat.EXTENDED)?.sender)
+        assertNull(SocialPolicy.render(known, rule, locked = true, format = SocialFormat.EXTENDED)?.sender)
+    }
+
+    @Test
     fun bodyOnlyCanHideTheApplicationNameWithLocalizedTitleFallback() {
         val notification = source.copy(title = null, text = "Ciao")
         val rendered = SocialPolicy.render(notification, allowed.copy(includeAppName = false), privateText = "Avviso")

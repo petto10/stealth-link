@@ -252,7 +252,7 @@
     <string name="nav_settings">Settings</string>
     <string name="notification_body_byte_limit">Message limit in bytes (UTF-8)</string>
     <string name="notification_paginate">Split into numbered pages</string>
-    <string name="notification_paginate_note">Send a separate numbered notification for each page when the message exceeds the byte limit.</string>
+    <string name="notification_paginate_note">Requires Extended text and permission in the app rule.</string>
     <string name="profile_clear_selection">Clear local selection</string>
     <string name="profile_local_selection_note">Profile selection is saved on this phone.</string>
     <string name="profile_name_hint">Up to 64 characters.</string>
@@ -260,4 +260,12 @@
     <string name="profile_slot_unnamed">Unnamed</string>
     <string name="settings_intro">Set the app language and appearance.</string>
     <string name="configuration_raw_code">Code %1$d</string>
+    <string name="notification_compact_lines">Compact lines</string>
+    <string name="notification_compact_lines_note">Remove line breaks to fit more text on the display.</string>
+    <string name="notification_max_pages">Maximum pages per notification</string>
+    <string name="notification_reverse_pages">Send the last page first</string>
+    <string name="notification_reverse_pages_note">Use this if the controller lists newest notifications first, so page 1 appears at the top.</string>
+    <string name="rule_paginate">Allow numbered pages for this app</string>
+    <string name="rule_paginate_note">Applies when numbered pages are enabled in Controller format.</string>
+    <string name="rule_title_note">The title can include the conversation or sender.</string>
 </resources>

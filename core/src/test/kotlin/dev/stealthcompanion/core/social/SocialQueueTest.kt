@@ -199,4 +199,44 @@ class SocialQueueTest {
         assertFalse(queue.offer(conversation(source.copy(sender = "Lia  Rossi", text = "Prima \n \n Seconda")), 1))
         assertNull(queue.poll(1))
     }
+
+    @Test
+    fun dispatchedGroupHintBelongsToNewestMessageAmongTheFreshAllowedEntries() {
+        val queue = SocialQueue(coalesceMs = 0)
+        val latest = ConversationMessage("Lia", "Già inviato", 4)
+        val retained = conversation(latest)
+        assertTrue(queue.offer(retained, 0))
+        assertEquals("Lia", queue.poll(0)?.sender)
+
+        val input = IncomingNotification(
+            retained.key,
+            "test.app",
+            "Social App",
+            conversation = "Squadra",
+            messages = listOf(
+                ConversationMessage("Ada", "Nuovo nel feed", 3),
+                latest,
+                ConversationMessage("Blocked", "Bloccato", 5),
+            ),
+        )
+        val rule = AppRule(enabled = true, blockedContacts = setOf("Blocked"))
+        val fullGroup = requireNotNull(SocialPolicy.render(input, rule, format = SocialFormat.EXTENDED))
+        assertEquals("Lia", fullGroup.sender)
+        assertTrue(queue.offer(fullGroup, 1))
+        val fresh = queue.poll(1)
+        assertEquals("Nuovo nel feed — Ada", fresh?.body)
+        assertEquals("Ada", fresh?.sender)
+    }
+
+    @Test
+    fun coalescedIdenticalContentUsesTheNewestSenderHintWithoutResending() {
+        val queue = SocialQueue(coalesceMs = 10)
+        val plain = note("a").copy(sender = "Ada")
+        assertTrue(queue.offer(plain, 0))
+        assertFalse(queue.offer(plain.copy(sender = null), 3))
+        assertEquals(10L, queue.nextReadyAt(3))
+        val dispatched = requireNotNull(queue.poll(10))
+        assertNull(dispatched.sender)
+        assertFalse(queue.offer(plain, 11))
+    }
 }

@@ -12,9 +12,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import dev.stealthcompanion.R
+import dev.stealthcompanion.core.protocol.DisplayTextPolicy
 
 private val fragmentDelays = listOf(0, 10, 25, 50, 100, 300)
-private val messageByteLimits = listOf(64, 96, 112, 120, 128, 255)
+private val pageLimitChoices = (2..DisplayTextPolicy.MAX_PAGES).toList()
 
 @Composable
 internal fun NotificationFormat(state: StealthUiState, onAction: (UiAction) -> Unit) {
@@ -27,13 +28,26 @@ internal fun NotificationFormat(state: StealthUiState, onAction: (UiAction) -> U
         FormatChoices(R.string.probe_fragment_delay, fragmentDelays, state.fragmentDelayMs) {
             onAction(UiAction.SetFragmentDelay(it))
         }
-        FormatChoices(R.string.notification_body_byte_limit, messageByteLimits, state.bodyByteLimit) {
+        FormatChoices(
+            R.string.notification_body_byte_limit, DisplayTextPolicy.BODY_LIMIT_CHOICES, state.bodyByteLimit,
+        ) {
             onAction(UiAction.SetBodyByteLimit(it))
         }
         HorizontalDivider()
+        SwitchRow(R.string.notification_compact_lines, state.compactLines, {
+            onAction(UiAction.SetCompactLines(it))
+        }, R.string.notification_compact_lines_note)
         SwitchRow(R.string.notification_paginate, state.paginateNotifications, {
             onAction(UiAction.SetPaginateNotifications(it))
         }, R.string.notification_paginate_note)
+        if (state.extendedText && state.paginateNotifications) {
+            FormatChoices(R.string.notification_max_pages, pageLimitChoices, state.maxNotificationPages) {
+                onAction(UiAction.SetMaxNotificationPages(it))
+            }
+            SwitchRow(R.string.notification_reverse_pages, state.reversePageDelivery, {
+                onAction(UiAction.SetReversePageDelivery(it))
+            }, R.string.notification_reverse_pages_note)
+        }
     }
 }
 

@@ -10,28 +10,74 @@ class DisplayTextPolicy(
     private val bodyLimitBytes: Int = DEFAULT_BODY_LIMIT_BYTES,
     private val paged: Boolean = false,
     private val maxPages: Int = MAX_PAGES,
+    private val compactLines: Boolean = false,
 ) {
     init {
         require(bodyLimitBytes in 1..BODY_LIMIT_CHOICES.last())
         require(maxPages in 1..MAX_PAGES)
     }
 
-    fun render(payload: SocialPayload): DisplayTextPlan {
+    fun render(payload: SocialPayload, sender: String? = null): DisplayTextPlan {
+        val body = if (compactLines) flattenLines(payload.text) else payload.text
         val pageLimit = if (paged) maxPages else 1
-        val boundaries = boundariesWithin(payload.text, bodyLimitBytes * pageLimit)
+        val boundaries = boundariesWithin(body, bodyLimitBytes * pageLimit)
         val wholeEnd = furthestReachable(boundaries, pageLimit, bodyLimitBytes)
-        val truncated = boundaries[wholeEnd].offset < payload.text.length
+        val truncated = boundaries[wholeEnd].offset < body.length
         val marker = if (truncated) ".".repeat(minOf(3, bodyLimitBytes)) else ""
         val finalBudget = bodyLimitBytes - marker.length
         val targetEnd = if (truncated) furthestReachable(boundaries, pageLimit, finalBudget) else wholeEnd
         if (targetEnd == 0 || boundaries[targetEnd].bytes <= finalBudget) {
-            return DisplayTextPlan(listOf(payload.copy(text = payload.text.substring(0, boundaries[targetEnd].offset) + marker)), truncated)
+            val text = body.substring(0, boundaries[targetEnd].offset) + marker
+            return DisplayTextPlan(listOf(payload.copy(text = text)), truncated)
         }
 
+        val lineBreaks = BreakIterator.getLineInstance(Locale.ROOT).apply { setText(body) }
+        val ends = naturalPageEnds(boundaries, targetEnd, pageLimit, finalBudget, lineBreaks)
+            ?: fallbackPageEnds(boundaries, targetEnd, pageLimit, finalBudget, lineBreaks)
+        val pageCount = ends.size
+        val labelBytes = "$pageCount/$pageCount ".length
+        val heading = pageHeading(payload.title, sender, PAGE_TITLE_BYTES - labelBytes)
+        var start = 0
+        val pages = ends.mapIndexed { index, end ->
+            val label = "${index + 1}/$pageCount "
+            val text = body.substring(boundaries[start].offset, boundaries[end].offset)
+            start = end
+            payload.copy(title = label + heading, text = if (index == ends.lastIndex) text + marker else text)
+        }
+        return DisplayTextPlan(pages, truncated)
+    }
+
+    private fun naturalPageEnds(
+        boundaries: List<Boundary>,
+        targetEnd: Int,
+        pageLimit: Int,
+        finalBudget: Int,
+        lineBreaks: BreakIterator,
+    ): List<Int>? {
+        val ends = mutableListOf<Int>()
+        var start = 0
+        repeat(pageLimit) { index ->
+            if (boundaries[targetEnd].bytes - boundaries[start].bytes <= finalBudget) return ends + targetEnd
+            if (index == pageLimit - 1) return null
+            val furthest = endWithin(boundaries, start, targetEnd - 1, bodyLimitBytes)
+            val end = (furthest downTo start + 1).firstOrNull { lineBreaks.isBoundary(boundaries[it].offset) }
+                ?: return null
+            ends += end
+            start = end
+        }
+        return null
+    }
+
+    private fun fallbackPageEnds(
+        boundaries: List<Boundary>,
+        targetEnd: Int,
+        pageLimit: Int,
+        finalBudget: Int,
+        lineBreaks: BreakIterator,
+    ): List<Int> {
         val earliest = startsThatFit(boundaries, targetEnd, pageLimit, finalBudget)
         val pageCount = (1..pageLimit).first { earliest[it] == 0 }
-        val lineBreaks = BreakIterator.getLineInstance(Locale.ROOT).apply { setText(payload.text) }
-        val pages = mutableListOf<SocialPayload>()
+        val ends = mutableListOf<Int>()
         var start = 0
         for (index in 1..pageCount) {
             val finalPage = index == pageCount
@@ -44,13 +90,32 @@ class DisplayTextPolicy(
                 val lastEnd = if (furthestEnd == targetEnd && firstEndThatFits < targetEnd) targetEnd - 1 else furthestEnd
                 (lastEnd downTo firstEndThatFits).firstOrNull { lineBreaks.isBoundary(boundaries[it].offset) } ?: lastEnd
             }
-            val label = "$index/$pageCount "
-            val shortTitle = SocialCodec.encodeUtf8Within(payload.title, PAGE_TITLE_BYTES - label.length).toString(Charsets.UTF_8)
-            val text = payload.text.substring(boundaries[start].offset, boundaries[end].offset)
-            pages += payload.copy(title = label + shortTitle, text = if (finalPage) text + marker else text)
+            ends += end
             start = end
         }
-        return DisplayTextPlan(pages, truncated)
+        return ends
+    }
+
+    private fun pageHeading(title: String, sender: String?, budget: Int): String {
+        val context = flattenLines(title).trim()
+        val name = sender?.let(::flattenLines)?.trim().orEmpty()
+        val nameBytes = SocialCodec.encodeUtf8Within(name, budget)
+        if (nameBytes.isEmpty()) return SocialCodec.encodeUtf8Within(context, budget).toString(Charsets.UTF_8)
+        val preferred = nameBytes.toString(Charsets.UTF_8).trimEnd()
+        if (preferred != name) return preferred
+        val remainder = budget - nameBytes.size - TITLE_SEPARATOR.toByteArray(Charsets.UTF_8).size
+        val otherLabels = context.split(TITLE_SEPARATOR).filterNot { it.equals(name, ignoreCase = true) }
+        val shortenedContext = SocialCodec.encodeUtf8Within(otherLabels.joinToString(TITLE_SEPARATOR), remainder)
+            .toString(Charsets.UTF_8).trimEnd()
+        return if (shortenedContext.isEmpty()) preferred else preferred + TITLE_SEPARATOR + shortenedContext
+    }
+
+    private fun flattenLines(value: String): String {
+        if (!LINE_SEPARATORS.containsMatchIn(value)) return value
+        return LINE_SEPARATORS.splitToSequence(value)
+            .map { line -> line.trim { it == '\t' || Character.isSpaceChar(it) } }
+            .filter { it.isNotEmpty() }
+            .joinToString(" ")
     }
 
     private data class Boundary(val offset: Int, val bytes: Int)
@@ -93,9 +158,11 @@ class DisplayTextPolicy(
     }
 
     companion object {
-        val BODY_LIMIT_CHOICES: List<Int> = listOf(64, 96, 112, 120, 128, 255)
-        const val DEFAULT_BODY_LIMIT_BYTES = 112
+        val BODY_LIMIT_CHOICES: List<Int> = listOf(64, 96, 110, 120, 128, 255)
+        const val DEFAULT_BODY_LIMIT_BYTES = 110
         const val MAX_PAGES = 4
-        private const val PAGE_TITLE_BYTES = 12
+        private const val PAGE_TITLE_BYTES = 32
+        private const val TITLE_SEPARATOR = " · "
+        private val LINE_SEPARATORS = Regex("[\\r\\n\\u000B\\u000C\\u0085\\u2028\\u2029]+")
     }
 }

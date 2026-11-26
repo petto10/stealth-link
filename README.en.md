@@ -8,12 +8,12 @@ An independent Android companion for the **Turtle Beach Stealth Ultra**. Version
 
 - Opt-in forwarding for any app whose notifications Android exposes to `NotificationListenerService`. Filters by channel, contact, and conversation, `MessagingStyle` extraction, deduplication, coalescing, and generic alerts while the phone is locked.
 - Custom synthetic test messages, a simulator that reassembles protocol attributes, and a Lab for recording observations on the physical display.
-- Protected Social transport. New installations default to extended text, a 112-byte UTF‑8 body limit, 25 ms between fragments, and numbered pages off. An upgrade preserves an explicit previous choice of compatibility or extended text.
+- Protected Social transport. New installations default to extended text, a 110-byte UTF‑8 limit per page, 25 ms between fragments, and numbered pages on. Pagination can be turned off globally or per app. An upgrade preserves an explicit previous choice of compatibility or extended text.
 - A Lab with known-length samples, separate encoding tests, configurable fragment pacing, and optional short numbered notifications. **Notifications-only connection** mode lets you test Social without opening the settings client.
 - BLE session in a `connectedDevice` service, selection of previously paired devices, reconnection, manual recovery with the same pairing, and exportable diagnostics free of personal content.
 - A read-only **Configuration** panel with the active slot, system properties, and device information when exposed. **Profiles** shows the ten slot names and lets you create, rename, select, import, and export local profiles.
 
-The hardware test reported after `0.2.1-alpha` showed a complete 32-byte sample, multiple lines, and scrolling in the detail view. Approximately 120 readable characters were reported for the 128- and 255-byte ASCII samples. That observation comes from one controller, and the visible limit can vary. [Physical test results and A/B procedure in Italian](docs/prove-telefono.md#confronto-ab-a-mtu-23)
+The `0.2.1-alpha` hardware log records six completed GATT deliveries and 43 fragments, with full responses for the 128- and 255-byte ASCII samples. The photos and user report put the visible limit at around 120 characters on the tested controller. Multiple lines and scrolling were also observed in the detail view. [Physical test results and A/B procedure in Italian](docs/prove-telefono.md#confronto-ab-a-mtu-23)
 
 ## Install and try
 

@@ -68,7 +68,7 @@ data class LengthProbe(
         ProbeText.ASCII -> " abc "
         ProbeText.ACCENTS -> if (section % 2 == 0) " città " else "caffè "
         ProbeText.EMOJI -> if (section % 2 == 0) " 👋🏽 " else " 🙂 "
-        ProbeText.MULTILINE -> " riga\n"
+        ProbeText.MULTILINE -> " abc\n"
     }
 
     companion object {

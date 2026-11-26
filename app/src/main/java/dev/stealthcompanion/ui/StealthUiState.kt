@@ -1,5 +1,6 @@
 package dev.stealthcompanion.ui
 
+import dev.stealthcompanion.core.protocol.DisplayTextPolicy
 import dev.stealthcompanion.core.protocol.LengthProbe
 
 enum class CompanionMode { SIMULATOR, CONTROLLER }
@@ -27,6 +28,7 @@ data class RuleUi(
     val blockedContacts: Set<String> = emptySet(),
     val allowedConversations: Set<String> = emptySet(),
     val blockedConversations: Set<String> = emptySet(),
+    val paginate: Boolean = true,
 )
 
 data class ObservedAppUi(
@@ -110,8 +112,11 @@ data class StealthUiState(
     val relaxedSynthetic: Boolean = false,
     val extendedText: Boolean = true,
     val fragmentDelayMs: Int = 25,
-    val bodyByteLimit: Int = 112,
-    val paginateNotifications: Boolean = false,
+    val bodyByteLimit: Int = DisplayTextPolicy.DEFAULT_BODY_LIMIT_BYTES,
+    val paginateNotifications: Boolean = true,
+    val compactLines: Boolean = false,
+    val reversePageDelivery: Boolean = false,
+    val maxNotificationPages: Int = DisplayTextPolicy.MAX_PAGES,
     val simulatorMtu: Int = 23,
     val lastLengthProbeId: Long? = null,
     val lastLengthProbeOutcome: LengthProbeOutcome? = null,
@@ -142,6 +147,9 @@ sealed interface UiAction {
     data class SetFragmentDelay(val value: Int) : UiAction
     data class SetBodyByteLimit(val value: Int) : UiAction
     data class SetPaginateNotifications(val value: Boolean) : UiAction
+    data class SetCompactLines(val value: Boolean) : UiAction
+    data class SetReversePageDelivery(val value: Boolean) : UiAction
+    data class SetMaxNotificationPages(val value: Int) : UiAction
     data class SetSimulatorMtu(val value: Int) : UiAction
     data class RunProbe(val capability: DisplayCapability, val extended: Boolean? = null) : UiAction
     data class SendLengthProbe(val spec: LengthProbe, val extended: Boolean) : UiAction

@@ -91,6 +91,9 @@ internal class CompanionController(private val context: Context) {
             fragmentDelayMs = preferences.fragmentDelayMs,
             bodyByteLimit = preferences.bodyByteLimit,
             paginateNotifications = preferences.paginateNotifications,
+            compactLines = preferences.compactLines,
+            reversePageDelivery = preferences.reversePageDelivery,
+            maxNotificationPages = preferences.maxNotificationPages,
             notificationsOnly = preferences.notificationsOnly,
             observations = preferences.observations(),
         ),
@@ -103,6 +106,8 @@ internal class CompanionController(private val context: Context) {
     private var transportDrops = 0
     private var unreadable = 0
     private var personalPagesSent = 0L
+    private var paginatedMessages = 0L
+    private var partialPaginations = 0L
     private var truncatedPlans = 0L
     private var simulatedSample: DiagnosticsUi? = null
 
@@ -118,6 +123,7 @@ internal class CompanionController(private val context: Context) {
                 if (state.value.mode == CompanionMode.CONTROLLER) {
                     if (!status.socialReady && state.value.connection == ConnectionState.READY) {
                         discardQueuedTests { it.lengthRun != null }
+                        if (activePersonalKey != null) activeDelivery?.cancel()
                     }
                     update { ui ->
                         val settings = status.settings
@@ -357,6 +363,22 @@ internal class CompanionController(private val context: Context) {
         update { it.copy(paginateNotifications = value) }
     }
 
+    fun setCompactLines(value: Boolean) {
+        preferences.compactLines = value
+        update { it.copy(compactLines = value) }
+    }
+
+    fun setReversePageDelivery(value: Boolean) {
+        preferences.reversePageDelivery = value
+        update { it.copy(reversePageDelivery = value) }
+    }
+
+    fun setMaxNotificationPages(value: Int) {
+        if (value !in 2..DisplayTextPolicy.MAX_PAGES) return
+        preferences.maxNotificationPages = value
+        update { it.copy(maxNotificationPages = value) }
+    }
+
     fun setNotificationsOnly(value: Boolean) {
         if (state.value.notificationsOnly == value) return
         preferences.notificationsOnly = value
@@ -506,7 +528,12 @@ internal class CompanionController(private val context: Context) {
             appendLine("normal_fragment_delay_ms=${state.value.fragmentDelayMs}")
             appendLine("normal_body_limit_bytes=${state.value.bodyByteLimit}")
             appendLine("normal_pagination=${state.value.paginateNotifications}")
+            appendLine("normal_compact_lines=${state.value.compactLines}")
+            appendLine("normal_reverse_page_delivery=${state.value.reversePageDelivery}")
+            appendLine("normal_max_pages=${state.value.maxNotificationPages}")
             appendLine("normal_pages_completed=$personalPagesSent")
+            appendLine("normal_paginations_completed=$paginatedMessages")
+            appendLine("normal_paginations_partial=$partialPaginations")
             appendLine("normal_truncated_plans=$truncatedPlans")
             if (state.value.mode == CompanionMode.SIMULATOR) {
                 appendLine("simulator_mtu=${state.value.simulatorMtu}")
@@ -618,34 +645,62 @@ internal class CompanionController(private val context: Context) {
     }
 
     private suspend fun deliverPersonal(message: SocialMessage, ui: StealthUiState): Boolean {
-        val lockedAtStart = ui.privacyWhileLocked && phoneLocked()
-        val hiddenText = if (lockedAtStart) privateText() else null
+        val lockedAtStart = phoneLocked()
+        val hiddenText = if (ui.privacyWhileLocked && lockedAtStart) privateText() else null
         val payload = SocialPayload(hiddenText ?: message.title, hiddenText ?: message.body)
-        val peerLimit = if (ui.mode == CompanionMode.CONTROLLER) BleRuntime.state.value.currentMessageLimitBytes else null
+        val transport = BleRuntime.state.value.takeIf { ui.mode == CompanionMode.CONTROLLER }
+        val peerLimit = transport?.currentMessageLimitBytes
         val bodyLimit = minOf(ui.bodyByteLimit, peerLimit?.coerceIn(1, 255) ?: ui.bodyByteLimit)
-        val pages = if (ui.extendedText) {
-            DisplayTextPolicy(bodyLimitBytes = bodyLimit, paged = ui.paginateNotifications && !lockedAtStart)
-                .render(payload).also { if (it.truncated) truncatedPlans++ }.pages
-        } else {
+        val sender = message.sender.takeUnless { lockedAtStart }
+        val pages = if (!ui.extendedText) {
             listOf(payload)
+        } else if (peerLimit == 0) {
+            if (payload.text.isNotEmpty()) truncatedPlans++
+            listOf(payload.copy(text = ""))
+        } else {
+            val appAllowsPagination = message.packageName?.let(rules::get)?.paginate != false
+            DisplayTextPolicy(
+                bodyLimitBytes = bodyLimit,
+                paged = ui.paginateNotifications && appAllowsPagination && hiddenText == null,
+                maxPages = ui.maxNotificationPages,
+                compactLines = ui.compactLines,
+            ).render(payload, sender).also { if (it.truncated) truncatedPlans++ }.pages
         }
-        for ((index, page) in pages.withIndex()) {
-            if (!lockedAtStart && ui.privacyWhileLocked && phoneLocked()) return false
-            if (state.value.connection != ConnectionState.READY) return false
-            val deliveryKey = if (pages.size == 1) message.deliveryKey else {
-                "${message.deliveryKey.length}:${message.deliveryKey}:${index + 1}/${pages.size}"
+        var completedPages = 0
+        try {
+            return deliverInFeedOrder(pages, ui.reversePageDelivery) { index, page ->
+                if (!lockedAtStart && (ui.privacyWhileLocked || sender != null && pages.size > 1) && phoneLocked()) {
+                    return@deliverInFeedOrder false
+                }
+                if (state.value.connection != ConnectionState.READY) return@deliverInFeedOrder false
+                if (transport != null) {
+                    val current = BleRuntime.state.value
+                    if (!current.socialReady || current.socialConnections != transport.socialConnections) {
+                        return@deliverInFeedOrder false
+                    }
+                }
+                val deliveryKey = if (pages.size == 1) message.deliveryKey else {
+                    "${message.deliveryKey.length}:${message.deliveryKey}:${index + 1}/${pages.size}"
+                }
+                val completed = when (ui.mode) {
+                    CompanionMode.SIMULATOR -> simulate(
+                        message.copy(title = page.title, body = page.text, deliveryKey = deliveryKey),
+                        ProtocolOptions(), 4, false, ui.extendedText,
+                    ) != null
+                    CompanionMode.CONTROLLER -> BleRuntime.send(deliveryKey, page.title, page.text, message.packageName)
+                }
+                if (completed) {
+                    personalPagesSent++
+                    completedPages++
+                }
+                completed
             }
-            val completed = when (ui.mode) {
-                CompanionMode.SIMULATOR -> simulate(
-                    message.copy(title = page.title, body = page.text, deliveryKey = deliveryKey),
-                    ProtocolOptions(), 4, false, ui.extendedText,
-                ) != null
-                CompanionMode.CONTROLLER -> BleRuntime.send(deliveryKey, page.title, page.text, message.packageName)
+        } finally {
+            if (pages.size > 1) {
+                if (completedPages == pages.size) paginatedMessages++
+                else if (completedPages > 0) partialPaginations++
             }
-            if (!completed) return false
-            personalPagesSent++
         }
-        return true
     }
 
     private suspend fun deliverTest(test: Synthetic, mode: CompanionMode) {

@@ -29,6 +29,7 @@ class LengthProbeTest {
                         ProbeText.MULTILINE -> {
                             assertTrue(description, '\n' in body)
                             assertFalse(description, '\r' in body)
+                            assertEquals(description, LengthProbe(bytes).body(), body.replace('\n', ' '))
                         }
                     }
                 }

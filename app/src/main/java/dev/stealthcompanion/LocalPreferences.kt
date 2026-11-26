@@ -39,8 +39,17 @@ internal class LocalPreferences(context: Context) {
             .takeIf { it in DisplayTextPolicy.BODY_LIMIT_CHOICES } ?: DisplayTextPolicy.DEFAULT_BODY_LIMIT_BYTES
         set(value) { data.edit { putInt("body_byte_limit", value) } }
     var paginateNotifications: Boolean
-        get() = data.getBoolean("paginate_notifications", false)
+        get() = data.getBoolean("paginate_notifications", true)
         set(value) { data.edit { putBoolean("paginate_notifications", value) } }
+    var compactLines: Boolean
+        get() = data.getBoolean("compact_lines", false)
+        set(value) { data.edit { putBoolean("compact_lines", value) } }
+    var reversePageDelivery: Boolean
+        get() = data.getBoolean("reverse_page_delivery", false)
+        set(value) { data.edit { putBoolean("reverse_page_delivery", value) } }
+    var maxNotificationPages: Int
+        get() = data.getInt("max_notification_pages", DisplayTextPolicy.MAX_PAGES).coerceIn(2, DisplayTextPolicy.MAX_PAGES)
+        set(value) { data.edit { putInt("max_notification_pages", value) } }
     var notificationsOnly: Boolean
         get() = data.getBoolean("notifications_only", false)
         set(value) { data.edit { putBoolean("notifications_only", value) } }
@@ -70,6 +79,7 @@ internal class LocalPreferences(context: Context) {
                 put("enabled", rule.enabled)
                 put("silent", rule.allowSilent)
                 put("appName", rule.includeAppName)
+                put("paginate", rule.paginate)
                 put("channels", JSONArray(rule.allowedChannels.toList()))
                 put("allowContacts", JSONArray(rule.allowedContacts.toList()))
                 put("blockContacts", JSONArray(rule.blockedContacts.toList()))
@@ -100,6 +110,7 @@ internal class LocalPreferences(context: Context) {
         enabled = optBoolean("enabled"),
         allowSilent = optBoolean("silent"),
         includeAppName = optBoolean("appName", true),
+        paginate = optBoolean("paginate", true),
         allowedChannels = strings("channels"),
         allowedContacts = strings("allowContacts"),
         blockedContacts = strings("blockContacts"),

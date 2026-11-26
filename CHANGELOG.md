@@ -2,11 +2,12 @@
 
 ## 0.3.0-alpha
 
-- Testo esteso come impostazione iniziale, con limite del corpo a 112 byte UTF‑8, intervallo di 25 ms fra frammenti e pagine numerate facoltative.
+- Testo esteso come impostazione iniziale, con limite di 110 byte UTF‑8 per pagina e 25 ms fra frammenti. Pagine numerate attive nel testo esteso, disattivabili globalmente o per app, con limite selezionabile da due a quattro.
+- Titoli numerati con priorità al mittente, opzioni per righe compatte e invio dell’ultima pagina per prima.
 - Preferenze esplicite di trasporto conservate durante l’aggiornamento. I campioni del Laboratorio mantengono i propri limiti e intervalli.
 - Ripristino manuale del collegamento con la stessa associazione Bluetooth e nuova navigazione Home, Notifiche, Profili e Altro.
 - Pannello Configurazione in sola lettura, con letture facoltative di energia, LED di carica, batteria e revisioni. Rinomina e selezione dei profili locali.
-- Documentato il riscontro riferito sulla 0.2.1 con dettaglio completo a 32 byte, più righe, scorrimento e una soglia visibile intorno a 120 caratteri ASCII sui campioni lunghi.
+- Analizzato il log della 0.2.1 con sei consegne GATT complete e 43 frammenti. Documentate le foto del dettaglio con una soglia visibile intorno a 120 caratteri ASCII e aggiunto il confronto controllato ASCII e più righe nel Laboratorio.
 
 [Note 0.3.0-alpha in italiano e inglese](docs/releases/v0.3.0-alpha.md)
 

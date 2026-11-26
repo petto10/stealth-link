@@ -8,12 +8,12 @@ Companion Android indipendente per **Turtle Beach Stealth Ultra**. La versione `
 
 - Inoltro su consenso per qualsiasi app che Android renda accessibile a `NotificationListenerService`. Filtri per canale, contatto e conversazione, gestione di `MessagingStyle`, deduplicazione, accorpamento e avvisi generici a telefono bloccato.
 - Messaggi sintetici con titolo e testo modificabili, simulatore con ricomposizione degli attributi e Laboratorio per osservare il comportamento sul display fisico.
-- Trasporto Social protetto. Le nuove installazioni partono dal testo esteso con limite del corpo a 112 byte UTF‑8, intervallo di 25 ms fra frammenti e pagine numerate disattivate. L’aggiornamento conserva la scelta esplicita precedente fra compatibilità e testo esteso.
+- Trasporto Social protetto. Le nuove installazioni partono dal testo esteso con limite del corpo a 110 byte UTF‑8 per pagina, 25 ms fra frammenti e pagine numerate attive. La suddivisione si può disattivare globalmente o per app. L’aggiornamento conserva la scelta esplicita precedente fra compatibilità e testo esteso.
 - Laboratorio con campioni di lunghezza nota, codifiche separate, ritmo tra i frammenti e prova facoltativa di notifiche brevi numerate. Modalità **Connessione solo notifiche** per provare Social senza aprire il client delle impostazioni.
 - Sessione BLE tramite un servizio `connectedDevice`, selezione di dispositivi già associati, tentativi di riconnessione, ripristino manuale con la stessa associazione e diagnostica esportabile senza contenuti personali.
 - Pannello **Configurazione** in sola lettura con slot attivo, proprietà di sistema e informazioni del dispositivo quando esposte. La schermata **Profili** mostra i nomi dei dieci slot e gestisce creazione, rinomina, selezione, importazione ed esportazione dei profili locali.
 
-Nella prova fisica riferita dopo la `0.2.1-alpha`, il dettaglio ha mostrato integralmente un campione da 32 byte, più righe e lo scorrimento. Per i campioni ASCII da 128 e 255 byte sono stati riportati circa 120 caratteri leggibili. È un riscontro su un singolo controller e il limite visibile può variare. [Riscontro fisico e procedura A/B](docs/prove-telefono.md#confronto-ab-a-mtu-23)
+Il log della prova `0.2.1-alpha` documenta 6 consegne GATT completate e 43 frammenti, con risposte complete anche per 128 e 255 byte ASCII. Le foto e il resoconto collocano la soglia visibile attorno a 120 caratteri sul controller provato. Nel dettaglio sono stati osservati anche più righe e scorrimento. [Riscontro fisico e procedura A/B](docs/prove-telefono.md#confronto-ab-a-mtu-23)
 
 ## Installa e prova
 

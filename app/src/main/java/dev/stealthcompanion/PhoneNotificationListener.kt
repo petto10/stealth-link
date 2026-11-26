@@ -50,6 +50,7 @@ class PhoneNotificationListener : NotificationListenerService() {
             }
         }
         val latest = ordered.lastOrNull()?.person
+        val senderName = latest?.name.bounded()
         val title = extras?.getCharSequence(Notification.EXTRA_TITLE).bounded()
         val body = extras?.getCharSequence(Notification.EXTRA_BIG_TEXT).bounded()
             ?: extras?.getCharSequence(Notification.EXTRA_TEXT).bounded()
@@ -73,7 +74,7 @@ class PhoneNotificationListener : NotificationListenerService() {
             appName = appLabel(sbn.packageName),
             title = title,
             text = body,
-            sender = latest?.name.bounded() ?: title,
+            sender = senderName ?: title,
             conversation = conversation,
             channelId = channel,
             messages = messages,
@@ -84,6 +85,7 @@ class PhoneNotificationListener : NotificationListenerService() {
             timestamp = sbn.postTime,
             conversationId = if (Build.VERSION.SDK_INT >= 26) notification.shortcutId else null,
             contactId = latest?.key,
+            senderIsExplicit = senderName != null,
         )
     }
 
