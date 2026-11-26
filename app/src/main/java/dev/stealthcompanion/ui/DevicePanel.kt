@@ -41,6 +41,14 @@ import dev.stealthcompanion.R
 internal fun DevicePanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
     Page(R.string.device_title, R.string.device_intro) {
         ConnectionHero(state)
+        val battery = state.configuration.batteryPercent?.takeIf { it in 0..100 }
+        val firmware = state.configuration.firmwareRevision?.takeIf { it.isNotBlank() }
+        if (state.mode == CompanionMode.CONTROLLER && (battery != null || firmware != null)) {
+            Panel {
+                battery?.let { BodyNote(stringResource(R.string.home_battery, it)) }
+                firmware?.let { BodyNote(stringResource(R.string.home_firmware, it)) }
+            }
+        }
         Panel {
             SectionTitle(R.string.mode_title)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -83,7 +91,6 @@ internal fun DevicePanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
                 onAction(UiAction.SetPaused(it))
             }, R.string.pause_subtitle)
         }
-        DiagnosticsPanel(state.diagnostics, state.mode) { onAction(UiAction.ExportDiagnostics) }
     }
 }
 
@@ -248,7 +255,9 @@ private fun ControllersPanel(state: StealthUiState, onAction: (UiAction) -> Unit
                 }
             }
         }
-        val hasDevice = state.selectedDeviceId != null || state.selectedSocialDeviceId != null
+        val hasDevice = state.devices.any { device ->
+            device.id == state.selectedDeviceId || device.id == state.selectedSocialDeviceId
+        }
         if (state.isRunning) {
             OutlinedButton(onClick = { onAction(UiAction.StopCompanion) }) {
                 Text(stringResource(R.string.action_disconnect))
@@ -259,42 +268,10 @@ private fun ControllersPanel(state: StealthUiState, onAction: (UiAction) -> Unit
                 onClick = { onAction(UiAction.StartCompanion) },
             ) { Text(stringResource(R.string.action_connect)) }
         }
-    }
-}
-
-@Composable
-private fun DiagnosticsPanel(diagnostics: DiagnosticsUi, mode: CompanionMode, export: () -> Unit) {
-    Panel {
-        SectionTitle(R.string.diagnostic_title)
-        BodyNote(R.string.diagnostic_subtitle)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Metric(R.string.metric_queued, diagnostics.queued, Modifier.weight(1f))
-            Metric(R.string.metric_sent, diagnostics.sent, Modifier.weight(1f))
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Metric(R.string.metric_dropped, diagnostics.dropped, Modifier.weight(1f))
-            Metric(R.string.metric_reconnects, diagnostics.reconnects, Modifier.weight(1f))
-        }
-        HorizontalDivider()
-        TransportReadout(diagnostics, mode)
-        OutlinedButton(onClick = export) { Text(stringResource(R.string.diagnostic_export)) }
-    }
-}
-
-@Composable
-private fun Metric(@StringRes label: Int, value: Int, modifier: Modifier) {
-    Surface(
-        modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            Text(value.toString(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(
-                stringResource(label),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        OutlinedButton(
+            enabled = state.bluetoothPermission && hasDevice,
+            onClick = { onAction(UiAction.RecoverConnection) },
+        ) { Text(stringResource(R.string.action_recover)) }
+        BodyNote(R.string.action_recover_note)
     }
 }

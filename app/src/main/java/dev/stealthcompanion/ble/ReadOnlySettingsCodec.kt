@@ -1,9 +1,12 @@
 package dev.stealthcompanion.ble
 
+import dev.stealthcompanion.configuration.PowerManagementRead
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 
-internal enum class SettingsQueryType { ACTIVE_SLOT, PROFILE_NAME, SYSTEM }
+internal enum class SettingsQueryType(val required: Boolean = true) {
+    ACTIVE_SLOT, PROFILE_NAME, SYSTEM, POWER_MANAGEMENT(false), CHARGE_LED(false),
+}
 
 internal data class SettingsQuery(val type: SettingsQueryType, val slot: Int = 0) {
     init {
@@ -15,6 +18,8 @@ internal data class SettingsQuery(val type: SettingsQueryType, val slot: Int = 0
             SettingsQueryType.ACTIVE_SLOT -> byteArrayOf(0x11, 0xbb.toByte(), 0, 0, 0, 0)
             SettingsQueryType.PROFILE_NAME -> byteArrayOf(0xd1.toByte(), 0x09, slot.toByte(), 0, 0, 0)
             SettingsQueryType.SYSTEM -> byteArrayOf(0xd1.toByte(), 0x06, 0, 0, 0, 0)
+            SettingsQueryType.POWER_MANAGEMENT -> byteArrayOf(0xc2.toByte(), 0, 0, 0, 0, 0)
+            SettingsQueryType.CHARGE_LED -> byteArrayOf(0xc4.toByte(), 0, 0, 0, 0, 0)
         }
         frame[frame.lastIndex] = frame.sum().toByte()
         return frame
@@ -29,6 +34,8 @@ internal object ReadOnlySettingsCodec {
             SettingsQueryType.ACTIVE_SLOT -> readActiveSlot(frame, snapshot)
             SettingsQueryType.PROFILE_NAME -> readProfile(frame, query.slot, snapshot)
             SettingsQueryType.SYSTEM -> readSystem(frame, snapshot)
+            SettingsQueryType.POWER_MANAGEMENT -> readPowerManagement(frame, snapshot)
+            SettingsQueryType.CHARGE_LED -> readChargeLed(frame, snapshot)
         }
 
     private fun readActiveSlot(frame: ByteArray, snapshot: ReadOnlySettings): ReadOnlySettings? {
@@ -59,6 +66,25 @@ internal object ReadOnlySettingsCodec {
             chargeLedBrightness = frame.valueAt(8),
         )
         return snapshot.copy(system = system)
+    }
+
+    private fun readPowerManagement(frame: ByteArray, snapshot: ReadOnlySettings): ReadOnlySettings? {
+        if (frame.size != 10 || frame.valueAt(0) != 0xc2 || frame.valueAt(1) != 0) return null
+        val mode = frame.valueAt(2)
+        val brightness = frame.valueAt(4)
+        if (mode !in 0..3 || brightness !in 0..10) return null
+        return snapshot.copy(powerManagement = PowerManagementRead(
+            powerMode = mode,
+            screenTimeoutMinutes = frame.valueAt(3),
+            screenBrightness = brightness,
+            sleepTimeoutMinutes = frame.valueAt(6),
+        ))
+    }
+
+    private fun readChargeLed(frame: ByteArray, snapshot: ReadOnlySettings): ReadOnlySettings? {
+        if (frame.size != 6 || frame.valueAt(0) != 0xc4 || frame.valueAt(1) != 0) return null
+        val brightness = frame.valueAt(2)
+        return snapshot.copy(chargeLedBrightness = brightness).takeIf { brightness in 0..10 }
     }
 
     private fun ByteArray.hasHeader(first: Int, second: Int): Boolean =

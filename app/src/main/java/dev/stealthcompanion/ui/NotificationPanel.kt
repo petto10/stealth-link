@@ -59,12 +59,9 @@ internal fun NotificationPanel(state: StealthUiState, onAction: (UiAction) -> Un
                 SwitchRow(R.string.privacy_locked, state.privacyWhileLocked, {
                     onAction(UiAction.SetLockPrivacy(it))
                 }, R.string.privacy_locked_note)
-                HorizontalDivider()
-                SwitchRow(R.string.extended_text, state.extendedText, {
-                    onAction(UiAction.SetExtendedText(it))
-                }, R.string.extended_text_note)
             }
         }
+        item { NotificationFormat(state, onAction) }
         if (!state.notificationAccess) {
             item {
                 Panel {

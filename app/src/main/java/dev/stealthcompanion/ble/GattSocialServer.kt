@@ -30,6 +30,7 @@ internal class GattSocialServer(
     private val handler: Handler,
     private val options: ProtocolOptions,
     private val requireEncryption: Boolean,
+    private val recoveryPeer: BluetoothDevice? = null,
     private val accepted: (BluetoothDevice) -> Boolean,
     private val diagnose: (BleDiagnosticEvent, Int?) -> Unit,
     private val detail: (BleDiagnostic) -> Unit,
@@ -43,9 +44,9 @@ internal class GattSocialServer(
         val publishedAt: Long,
         val retainedMillis: Long,
         val probe: BleProbe?,
+        val spacingMillis: Long,
     ) {
         val expiresAt: Long get() = publishedAt + retainedMillis
-        val spacingMillis: Long get() = probe?.fragmentDelayMs?.toLong() ?: 0L
         val acceptedRequests = mutableMapOf<ResponseRequest, Int>()
         val acceptedAttributes = mutableMapOf<Int, Int>()
         var acceptedResponses = 0
@@ -124,15 +125,17 @@ internal class GattSocialServer(
     private val session = SocialSession(options, MAX_RECORDS, RECORD_TTL_MS)
     private val records = LinkedHashMap<Int, Record>()
     private val packets = BleFrameQueue<Packet>(MAX_PACKETS, MAX_QUEUED_BYTES) { it.bytes.size }
-    private val recordExpiry = Runnable { expireRecords() }
-    private val pacedSend = Runnable { sendNext() }
+    private val recordExpiry = delayedAction()
+    private val pacedSend = delayedAction()
     private var pending: Send? = null
-    private var pendingTimeout: Runnable? = null
+    private val pendingTimeout = delayedAction()
     private var removeOutcome: CompletableDeferred<Boolean>? = null
-    private var packetTimeout: Runnable? = null
+    private val packetTimeout = delayedAction()
     private var packetDeadlineMs = 0L
     private var responseNumber = 0
-    private var serviceTimeout: Runnable? = null
+    private val serviceTimeout = delayedAction()
+    private val attachTimeout = delayedAction()
+    private var attachAttempted = false
 
     private val source = BluetoothGattCharacteristic(SocialCodec.NOTIFICATION_SOURCE_UUID, notifyProperties, 0)
     private val data = BluetoothGattCharacteristic(SocialCodec.DATA_SOURCE_UUID, notifyProperties, 0)
@@ -144,6 +147,8 @@ internal class GattSocialServer(
     )
 
     var reportedMtu: Int? = null
+        private set
+    var currentMessageLimitBytes: Int? = null
         private set
 
     val mtu: Int get() = BleMtuPolicy.socialMtu(reportedMtu)
@@ -178,19 +183,19 @@ internal class GattSocialServer(
             close()
             return false
         }
-        serviceTimeout = Runnable {
-            if (!registered && !closed) {
+        serviceTimeout.replace(SERVICE_TIMEOUT_MS) {
+            if (!registered && !closed && server === opened) {
                 diagnose(BleDiagnosticEvent.SERVER_FAILED, null)
                 restart()
             }
-        }.also { handler.postDelayed(it, SERVICE_TIMEOUT_MS) }
+        }
         return true
     }
 
     fun close() {
         closed = true
-        serviceTimeout?.let(handler::removeCallbacks)
-        serviceTimeout = null
+        serviceTimeout.cancel()
+        attachTimeout.cancel()
         val previous = server
         server = null
         resetPeer()
@@ -218,6 +223,7 @@ internal class GattSocialServer(
         category: Int,
         longResponse: Boolean,
         probe: BleProbe? = null,
+        regularExtendedDelayMs: Int = BlePacingPolicy.DEFAULT_EXTENDED_DELAY_MS,
     ): CompletableDeferred<Boolean>? {
         if (!ready || pending != null) return null
         val syntheticProbe = probe.takeIf { synthetic }
@@ -227,7 +233,8 @@ internal class GattSocialServer(
         val retainedMillis = if (syntheticProbe != null) SocialSession.MAX_PROBE_RETENTION_MS else RECORD_TTL_MS
         val event = session.publish(sessionKey, payload, now, category, longResponse, retainedMillis) ?: return null
         val uid = SocialCodec.decodeEvent(event)?.uid ?: return null
-        val record = Record(sessionKey, synthetic, longResponse, now, retainedMillis, syntheticProbe)
+        val spacingMillis = BlePacingPolicy.delayMillis(longResponse, synthetic, regularExtendedDelayMs, syntheticProbe)
+        val record = Record(sessionKey, synthetic, longResponse, now, retainedMillis, syntheticProbe, spacingMillis)
         if (!packets.offerBatch(listOf(Packet(source, event, record)))) {
             session.forget(sessionKey, now)
             detail(
@@ -289,7 +296,7 @@ internal class GattSocialServer(
 
     /** Returns true when expiry had to stop a partially transmitted response. */
     private fun expireRecords(): Boolean {
-        handler.removeCallbacks(recordExpiry)
+        recordExpiry.cancel()
         val now = SystemClock.elapsedRealtime()
         session.expire(now)
         records.entries.removeAll { now >= it.value.expiresAt }
@@ -297,7 +304,7 @@ internal class GattSocialServer(
                 it.record?.let { record -> now >= record.expiresAt } == true
             }) return true
         val nearestExpiry = records.values.minOfOrNull(Record::expiresAt) ?: return false
-        handler.postDelayed(recordExpiry, (nearestExpiry - now).coerceAtLeast(1))
+        recordExpiry.replace((nearestExpiry - now).coerceAtLeast(1)) { expireRecords() }
         return false
     }
 
@@ -326,9 +333,8 @@ internal class GattSocialServer(
     }
 
     private fun armDeliveryTimeout(send: Send) {
-        pendingTimeout?.let(handler::removeCallbacks)
-        pendingTimeout = Runnable { expirePendingDelivery() }.also {
-            handler.postDelayed(it, (send.deadlineMs - SystemClock.elapsedRealtime()).coerceAtLeast(1))
+        pendingTimeout.replace((send.deadlineMs - SystemClock.elapsedRealtime()).coerceAtLeast(1)) {
+            if (pending === send) expirePendingDelivery()
         }
     }
 
@@ -342,8 +348,7 @@ internal class GattSocialServer(
     }
 
     private fun finishPending(success: Boolean, cause: BleDiagnosticCause? = null) {
-        pendingTimeout?.let(handler::removeCallbacks)
-        pendingTimeout = null
+        pendingTimeout.cancel()
         val send = pending ?: return
         pending = null
         val event = if (success) BleDiagnosticEvent.SOCIAL_DELIVERY_COMPLETED else BleDiagnosticEvent.SOCIAL_DELIVERY_ABORTED
@@ -369,9 +374,10 @@ internal class GattSocialServer(
     }
 
     private fun clearPublications(cause: BleDiagnosticCause) {
+        currentMessageLimitBytes = null
         session.reset()
-        handler.removeCallbacks(recordExpiry)
-        handler.removeCallbacks(pacedSend)
+        recordExpiry.cancel()
+        pacedSend.cancel()
         records.clear()
         packets.clear()
         val removal = removeOutcome
@@ -382,14 +388,14 @@ internal class GattSocialServer(
     }
 
     private fun sendNext() {
-        handler.removeCallbacks(pacedSend)
+        pacedSend.cancel()
         expirePendingDelivery()
         if (closed) return
         val now = SystemClock.elapsedRealtime()
         if (records.values.any { now >= it.expiresAt } && expireRecords()) return
         val waitMillis = packets.remainingDelayMillis(now)
         if (waitMillis > 0) {
-            handler.postDelayed(pacedSend, waitMillis)
+            pacedSend.replace(waitMillis) { sendNext() }
             return
         }
         val packet = packets.launchNext(now) ?: return
@@ -430,15 +436,15 @@ internal class GattSocialServer(
             )
         }
         packetDeadlineMs = packet.dispatchedAtMillis + PACKET_TIMEOUT_MS
-        packetTimeout = Runnable {
+        packetTimeout.replace((packetDeadlineMs - SystemClock.elapsedRealtime()).coerceAtLeast(1)) {
+            if (packets.inFlight !== packet) return@replace
             diagnose(BleDiagnosticEvent.NOTIFICATION_TIMED_OUT, null)
             failPackets(BleDiagnosticCause.CALLBACK_TIMEOUT)
-        }.also { handler.postDelayed(it, (packetDeadlineMs - SystemClock.elapsedRealtime()).coerceAtLeast(1)) }
+        }
     }
 
     private fun cancelPacketTimeout() {
-        packetTimeout?.let(handler::removeCallbacks)
-        packetTimeout = null
+        packetTimeout.cancel()
         packetDeadlineMs = 0
     }
 
@@ -461,13 +467,13 @@ internal class GattSocialServer(
 
     private val callback = object : BluetoothGattServerCallback() {
         override fun onServiceAdded(status: Int, service: BluetoothGattService) = dispatch {
-            if (service.uuid != SocialCodec.SERVICE_UUID) return@dispatch
-            serviceTimeout?.let(handler::removeCallbacks)
-            serviceTimeout = null
+            if (registered || service.uuid != SocialCodec.SERVICE_UUID) return@dispatch
+            serviceTimeout.cancel()
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 registered = true
                 diagnose(BleDiagnosticEvent.SERVER_OPENED, null)
                 changed()
+                tryRecoveryAttach()
             } else {
                 diagnose(BleDiagnosticEvent.SERVER_FAILED, status)
                 restart()
@@ -476,6 +482,12 @@ internal class GattSocialServer(
 
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) = dispatch {
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                if (peer == null && attachTimeout.isPending && accepted(device)) {
+                    attachTimeout.cancel()
+                    detail(
+                        BleDiagnostic(0, BleDiagnosticEvent.SOCIAL_ATTACH_FAILED, status, BleDiagnosticCause.DISCONNECTED),
+                    )
+                }
                 peerDisconnected(device, status)
             } else if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS && accepted(device)) {
                 setPeer(device, status)
@@ -772,6 +784,14 @@ internal class GattSocialServer(
             }
             record.acceptedResponses++
             if (repeatCount > 0) record.repeatTimes.addLast(now)
+            if (!record.synthetic && requireEncryption) {
+                val requestedLimit = parsed?.attributes
+                    ?.firstOrNull { it.attribute == SocialAttribute.MESSAGE }?.maximumLength
+                if (requestedLimit != null && currentMessageLimitBytes != requestedLimit) {
+                    currentMessageLimitBytes = requestedLimit
+                    changed()
+                }
+            }
         }
         if (send != null) {
             send.requestReceived = true
@@ -818,12 +838,40 @@ internal class GattSocialServer(
     }
 
     private fun setPeer(device: BluetoothDevice, status: Int? = null) {
+        attachTimeout.cancel()
         if (peer?.address != device.address) {
             resetPeer()
             peer = device
             diagnose(BleDiagnosticEvent.PEER_CONNECTED, status)
         }
     }
+
+    private fun tryRecoveryAttach() {
+        val remote = recoveryPeer ?: return
+        val registration = server ?: return
+        if (closed || !registered || !accepted(remote) || peerConnected || attachAttempted) return
+        attachAttempted = true
+        diagnose(BleDiagnosticEvent.SOCIAL_ATTACH_REQUESTED, null)
+        if (!runCatching { registration.connect(remote, false) }.getOrDefault(false)) {
+            detail(BleDiagnostic(0, BleDiagnosticEvent.SOCIAL_ATTACH_FAILED, cause = BleDiagnosticCause.REQUEST_NOT_QUEUED))
+            return
+        }
+        attachTimeout.replace(ATTACH_TIMEOUT_MS) {
+            if (closed || server !== registration || peerConnected) return@replace
+            runCatching {
+                // Do not cancel a link which Android already considers established.
+                if (bluetooth.getConnectionState(remote, BluetoothProfile.GATT_SERVER) != BluetoothProfile.STATE_CONNECTED) {
+                    registration.cancelConnection(remote)
+                }
+            }
+            detail(BleDiagnostic(0, BleDiagnosticEvent.SOCIAL_ATTACH_FAILED, cause = BleDiagnosticCause.CALLBACK_TIMEOUT))
+        }
+    }
+
+    private fun delayedAction() = BleDelayedAction(
+        post = { task, delay -> handler.postDelayed(task, delay) },
+        remove = handler::removeCallbacks,
+    )
 
     private fun dispatch(action: () -> Unit) {
         handler.post { if (!closed) action() }
@@ -853,5 +901,6 @@ internal class GattSocialServer(
         const val REPEAT_WINDOW_MS = 1_000L
         const val PACKET_TIMEOUT_MS = 3_000L
         const val SERVICE_TIMEOUT_MS = 5_000L
+        const val ATTACH_TIMEOUT_MS = 6_000L
     }
 }

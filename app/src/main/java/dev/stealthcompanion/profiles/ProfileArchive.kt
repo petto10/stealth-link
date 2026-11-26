@@ -12,27 +12,61 @@ internal object ProfileArchive {
     const val MAX_PROFILES = 100
     private const val MAX_BYTES = 512 * 1024
     private const val FORMAT = "stealth-companion-profiles"
+    private const val LOCAL_FORMAT = "stealth-companion-local-profiles"
     private const val VERSION = 1
 
-    fun encode(profiles: List<LocalProfile>): ByteArray {
+    fun encode(profiles: List<LocalProfile>): ByteArray = serialize(encodeProfiles(profiles, FORMAT))
+
+    fun encodeLocal(catalog: LocalProfileCatalog): ByteArray {
+        val root = encodeProfiles(catalog.profiles, LOCAL_FORMAT)
+        val selected = catalog.activeProfileId
+        if (selected != null) {
+            require(catalog.profiles.any { it.id == selected }) { "Unknown active local profile" }
+            root.put("activeProfileId", selected)
+        }
+        return serialize(root)
+    }
+
+    private fun encodeProfiles(profiles: List<LocalProfile>, format: String): JSONObject {
         validateList(profiles)
         val entries = JSONArray()
         profiles.forEach { entries.put(entry(it)) }
-        return (JSONObject().put("format", FORMAT).put("version", VERSION)
-            .put("profiles", entries).toString(2) + "\n").toByteArray(StandardCharsets.UTF_8)
+        return JSONObject().put("format", format).put("version", VERSION).put("profiles", entries)
     }
+
+    private fun serialize(root: JSONObject): ByteArray = (root.toString(2) + "\n").toByteArray(StandardCharsets.UTF_8)
 
     fun decode(input: InputStream): List<LocalProfile> = decode(readBounded(input))
 
-    fun decode(bytes: ByteArray): List<LocalProfile> {
+    fun decode(bytes: ByteArray): List<LocalProfile> = decodeProfiles(parse(bytes), FORMAT)
+
+    fun decodeLocal(input: InputStream): LocalProfileCatalog {
+        val root = parse(readBounded(input))
+        return when (root.string("format")) {
+            FORMAT -> LocalProfileCatalog(decodeProfiles(root, FORMAT))
+            LOCAL_FORMAT -> {
+                val profiles = decodeProfiles(root, LOCAL_FORMAT)
+                val selected = root.string("activeProfileId")?.takeIf { id -> profiles.any { it.id == id } }
+                LocalProfileCatalog(profiles, selected)
+            }
+            else -> error("Unrecognized local profile format")
+        }
+    }
+
+    private fun parse(bytes: ByteArray): JSONObject {
         require(bytes.size <= MAX_BYTES) { "Profile backup is too large" }
         val text = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString()
         checkNesting(text)
         val tokens = JSONTokener(text)
         val root = tokens.nextValue() as? JSONObject ?: error("Missing profile backup object")
         require(tokens.nextClean() == '\u0000') { "Unexpected content after profile backup" }
-        root.requireKeys("format", "version", "profiles")
-        require(root.string("format") == FORMAT) { "Unrecognized profile backup format" }
+        return root
+    }
+
+    private fun decodeProfiles(root: JSONObject, format: String): List<LocalProfile> {
+        if (format == LOCAL_FORMAT) root.requireKeys("format", "version", "profiles", "activeProfileId")
+        else root.requireKeys("format", "version", "profiles")
+        require(root.string("format") == format) { "Unrecognized profile backup format" }
         require(root.integer("version") == VERSION) { "Unsupported profile backup version" }
         val values = root.getJSONArray("profiles")
         require(values.length() <= MAX_PROFILES) { "Too many profiles" }

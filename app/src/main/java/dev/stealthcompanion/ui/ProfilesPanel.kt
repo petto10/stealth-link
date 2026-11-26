@@ -28,46 +28,9 @@ import dev.stealthcompanion.R
 @Composable
 internal fun ProfilesPanel(state: StealthUiState, onAction: (UiAction) -> Unit) {
     var adding by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf<ProfileUi?>(null) }
     var deleting by remember { mutableStateOf<ProfileUi?>(null) }
     Page(R.string.profile_title, R.string.profile_intro) {
-        Panel {
-            SectionTitle(R.string.profile_slots)
-            if (state.profiles.slotNames.isEmpty() && state.profiles.activeSlot == null) {
-                BodyNote(R.string.profile_empty_slots)
-            } else {
-                val indices = (state.profiles.slotNames.keys + listOfNotNull(state.profiles.activeSlot)).sorted()
-                indices.distinct().forEach { slot ->
-                    val name = state.profiles.slotNames[slot].orEmpty()
-                    val label = stringResource(R.string.profile_slot_name, slot + 1)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            if (name.isBlank()) label else "$label · $name",
-                            modifier = Modifier.weight(1f),
-                            fontWeight = FontWeight.Medium,
-                        )
-                        if (slot == state.profiles.activeSlot) {
-                            Text(
-                                stringResource(R.string.profile_slot_active),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.secondary,
-                            )
-                        }
-                    }
-                }
-            }
-            OutlinedButton(onClick = { onAction(UiAction.ReadSettings) }) {
-                Text(stringResource(R.string.profile_read))
-            }
-        }
-        val system = state.profiles
-        if (system.powerMode != null || system.displayBrightness != null || system.sleepMinutes != null) {
-            Panel {
-                SectionTitle(R.string.profile_system)
-                system.powerMode?.let { BodyNote(stringResource(R.string.profile_power_mode, it)) }
-                system.displayBrightness?.let { BodyNote(stringResource(R.string.profile_display_brightness, it)) }
-                system.sleepMinutes?.let { BodyNote(stringResource(R.string.profile_sleep, it)) }
-            }
-        }
         Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) { SectionTitle(R.string.profile_local) }
@@ -76,12 +39,29 @@ internal fun ProfilesPanel(state: StealthUiState, onAction: (UiAction) -> Unit) 
             if (state.profiles.local.isEmpty()) {
                 BodyNote(R.string.profile_local_empty)
             } else {
+                BodyNote(R.string.profile_local_selection_note)
                 state.profiles.local.forEach { profile ->
                     key(profile.id) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(profile.name, Modifier.weight(1f), fontWeight = FontWeight.Medium)
-                            TextButton(onClick = { deleting = profile }) { Text(stringResource(R.string.action_remove)) }
+                        ChoiceRow(profile.name, profile.id == state.profiles.selectedLocalProfileId) {
+                            onAction(UiAction.SelectLocalProfile(profile.id))
                         }
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(onClick = { renaming = profile }) {
+                                Text(stringResource(R.string.profile_rename))
+                            }
+                            TextButton(onClick = { deleting = profile }) {
+                                Text(stringResource(R.string.action_remove))
+                            }
+                        }
+                    }
+                }
+                if (state.profiles.selectedLocalProfileId != null) {
+                    TextButton(onClick = { onAction(UiAction.SelectLocalProfile(null)) }) {
+                        Text(stringResource(R.string.profile_clear_selection))
                     }
                 }
             }
@@ -95,15 +75,35 @@ internal fun ProfilesPanel(state: StealthUiState, onAction: (UiAction) -> Unit) 
                 }
             }
         }
+        val canRead = state.mode == CompanionMode.CONTROLLER && !state.notificationsOnly &&
+            state.configuration.connected && !state.configuration.reading
+        ControllerSlots(state.profiles, canRead) {
+            onAction(UiAction.ReadSettings)
+        }
     }
     if (adding) {
-        NewProfileDialog(
+        ProfileNameDialog(
+            title = stringResource(R.string.profile_create),
+            initialName = stringResource(R.string.profile_new_default),
             onDismiss = { adding = false },
-            onAdd = { name ->
+            onSave = { name ->
                 onAction(UiAction.AddProfile(name))
                 adding = false
             },
         )
+    }
+    renaming?.let { profile ->
+        key(profile.id) {
+            ProfileNameDialog(
+                title = stringResource(R.string.profile_rename),
+                initialName = profile.name,
+                onDismiss = { renaming = null },
+                onSave = { name ->
+                    onAction(UiAction.RenameProfile(profile.id, name))
+                    renaming = null
+                },
+            )
+        }
     }
     deleting?.let { profile ->
         AlertDialog(
@@ -124,22 +124,61 @@ internal fun ProfilesPanel(state: StealthUiState, onAction: (UiAction) -> Unit) 
 }
 
 @Composable
-private fun NewProfileDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
-    val initialName = stringResource(R.string.profile_new_default)
+private fun ControllerSlots(profiles: ProfilesUi, canRead: Boolean, read: () -> Unit) {
+    Panel {
+        SectionTitle(R.string.profile_slots)
+        if (profiles.slotNames.isEmpty() && profiles.activeSlot == null) {
+            BodyNote(R.string.profile_empty_slots)
+        } else {
+            (1..10).forEach { slot ->
+                val name = profiles.slotNames[slot]
+                val displayName = when {
+                    name == null -> stringResource(R.string.configuration_undefined)
+                    name.isBlank() -> stringResource(R.string.profile_slot_unnamed)
+                    else -> name
+                }
+                val slotLabel = stringResource(R.string.profile_slot_name, slot)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "$slotLabel · $displayName",
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.Medium,
+                    )
+                    if (slot == profiles.activeSlot) {
+                        Text(
+                            stringResource(R.string.profile_slot_active),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                }
+            }
+        }
+        OutlinedButton(enabled = canRead, onClick = read) { Text(stringResource(R.string.profile_read)) }
+    }
+}
+
+@Composable
+private fun ProfileNameDialog(title: String, initialName: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
     var name by remember(initialName) { mutableStateOf(initialName) }
+    val trimmedName = name.trim()
+    val valid = trimmedName.isNotEmpty() && trimmedName.codePointCount(0, trimmedName.length) <= 64 &&
+        trimmedName.none(Char::isISOControl)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.profile_create)) },
+        title = { Text(title) },
         text = {
             OutlinedTextField(
-                name, { name = it.take(64) },
+                name, { if (it.length <= 256) name = it },
                 label = { Text(stringResource(R.string.profile_name)) },
+                supportingText = { Text(stringResource(R.string.profile_name_hint)) },
+                isError = name.isNotBlank() && !valid,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
         },
         confirmButton = {
-            Button(enabled = name.isNotBlank(), onClick = { onAdd(name.trim()) }) {
+            Button(enabled = valid, onClick = { onSave(trimmedName) }) {
                 Text(stringResource(R.string.action_save))
             }
         },

@@ -1,11 +1,12 @@
 package dev.stealthcompanion.ble
 
 import android.os.Handler
+import dev.stealthcompanion.configuration.ControllerDeviceStatus
 import java.util.UUID
 
 /**
  * Allowlisted queries. The only application writes this channel can originate are requests
- * for slot, profile name, and system data.
+ * for slot, profile names, system data and the optional power and charging-light readouts.
  */
 internal class ReadOnlyGattSettings(
     private val handler: Handler,
@@ -17,7 +18,7 @@ internal class ReadOnlyGattSettings(
     private var snapshot = ReadOnlySettings()
     private val queue = ArrayDeque<SettingsQuery>()
     private var pending: SettingsQuery? = null
-    private var received = false
+    private var staged: ReadOnlySettings? = null
     private var acknowledged = false
     private var missingResponse = false
     private var timeout: Runnable? = null
@@ -31,6 +32,7 @@ internal class ReadOnlyGattSettings(
         cancelTimeout()
         queue.clear()
         pending = null
+        staged = null
         if (snapshot.reading) diagnose(BleDiagnosticEvent.SETTINGS_READ_PARTIAL, null)
         snapshot = if (clear) ReadOnlySettings() else snapshot.copy(reading = false, complete = false)
         publish(snapshot)
@@ -43,15 +45,17 @@ internal class ReadOnlyGattSettings(
         queue.addLast(SettingsQuery(SettingsQueryType.ACTIVE_SLOT))
         for (slot in 0 until ReadOnlySettingsCodec.SLOT_COUNT) queue.addLast(SettingsQuery(SettingsQueryType.PROFILE_NAME, slot))
         queue.addLast(SettingsQuery(SettingsQueryType.SYSTEM))
-        snapshot = ReadOnlySettings(reading = true)
+        queue.addLast(SettingsQuery(SettingsQueryType.POWER_MANAGEMENT))
+        queue.addLast(SettingsQuery(SettingsQueryType.CHARGE_LED))
+        snapshot = ReadOnlySettings(reading = true, deviceStatus = snapshot.deviceStatus)
         publish(snapshot)
         issueNext()
     }
 
     fun onWrite(status: Int) {
-        if (pending == null) return
+        val query = pending ?: return
         if (status != 0) {
-            fail(status)
+            if (query.type.required) fail(status) else skipOptional()
             return
         }
         acknowledged = true
@@ -60,15 +64,19 @@ internal class ReadOnlyGattSettings(
 
     fun onData(frame: ByteArray) {
         val query = pending ?: return
-        if (received) return
-        val updated = ReadOnlySettingsCodec.decode(query, frame, snapshot) ?: return
-        snapshot = updated
-        received = true
-        publish(snapshot)
+        if (staged != null) return
+        staged = ReadOnlySettingsCodec.decode(query, frame, snapshot) ?: return
         continueIfComplete()
     }
 
+    fun updateDeviceStatus(status: ControllerDeviceStatus) {
+        if (snapshot.deviceStatus == status) return
+        snapshot = snapshot.copy(deviceStatus = status)
+        publish(snapshot)
+    }
+
     private fun issueNext() {
+        staged = null
         pending = queue.removeFirstOrNull()
         val query = pending
         if (query == null) {
@@ -80,18 +88,17 @@ internal class ReadOnlyGattSettings(
             )
             return
         }
-        received = false
         acknowledged = false
         diagnose(BleDiagnosticEvent.SETTINGS_READ_REQUESTED, query.type.ordinal)
         if (writeQuery?.invoke(query.bytes()) != true) {
-            fail(null)
+            if (query.type.required) fail(null) else skipOptional()
             return
         }
         timeout = Runnable {
             if (acknowledged) {
                 // Each reply is matched by opcode and slot. No late write callback remains.
                 cancelTimeout()
-                missingResponse = true
+                if (query.type.required) missingResponse = true
                 issueNext()
             } else {
                 fail(null)
@@ -99,9 +106,17 @@ internal class ReadOnlyGattSettings(
         }.also { handler.postDelayed(it, QUERY_TIMEOUT_MS) }
     }
 
-    private fun continueIfComplete() {
-        if (!received || !acknowledged) return
+    private fun skipOptional() {
         cancelTimeout()
+        issueNext()
+    }
+
+    private fun continueIfComplete() {
+        val result = staged ?: return
+        if (!acknowledged) return
+        cancelTimeout()
+        snapshot = result.copy(deviceStatus = snapshot.deviceStatus)
+        publish(snapshot)
         issueNext()
     }
 
@@ -109,6 +124,7 @@ internal class ReadOnlyGattSettings(
         cancelTimeout()
         queue.clear()
         pending = null
+        staged = null
         snapshot = snapshot.copy(reading = false, complete = false)
         publish(snapshot)
         diagnose(BleDiagnosticEvent.SETTINGS_READ_PARTIAL, status)

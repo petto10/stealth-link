@@ -40,7 +40,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-internal enum class Glyph { SIGNAL, DEVICE, NOTIFICATIONS, LAB, PROFILES }
+internal enum class Glyph { SIGNAL, DEVICE, NOTIFICATIONS, LAB, PROFILES, CONFIGURATION, SETTINGS, DIAGNOSTICS, MORE }
 
 @Composable
 internal fun Symbol(glyph: Glyph, color: Color, modifier: Modifier = Modifier) {
@@ -110,6 +110,34 @@ internal fun Symbol(glyph: Glyph, color: Color, modifier: Modifier = Modifier) {
                     drawLine(color, Offset(6f, 4.2f), Offset(18f, 4.2f), 1.75f, StrokeCap.Round)
                     drawLine(color, Offset(7.5f, 12f), Offset(16.5f, 12f), 1.75f, StrokeCap.Round)
                     drawLine(color, Offset(7.5f, 15.5f), Offset(13.5f, 15.5f), 1.75f, StrokeCap.Round)
+                }
+                Glyph.CONFIGURATION -> {
+                    drawLine(color, Offset(4f, 6f), Offset(7f, 6f), 1.75f, StrokeCap.Round)
+                    drawLine(color, Offset(11f, 6f), Offset(20f, 6f), 1.75f, StrokeCap.Round)
+                    drawCircle(color, 2f, Offset(9f, 6f), style = stroke)
+                    drawLine(color, Offset(4f, 12f), Offset(14f, 12f), 1.75f, StrokeCap.Round)
+                    drawLine(color, Offset(18f, 12f), Offset(20f, 12f), 1.75f, StrokeCap.Round)
+                    drawCircle(color, 2f, Offset(16f, 12f), style = stroke)
+                    drawLine(color, Offset(4f, 18f), Offset(8f, 18f), 1.75f, StrokeCap.Round)
+                    drawLine(color, Offset(12f, 18f), Offset(20f, 18f), 1.75f, StrokeCap.Round)
+                    drawCircle(color, 2f, Offset(10f, 18f), style = stroke)
+                }
+                Glyph.SETTINGS -> {
+                    drawCircle(color, 6.8f, Offset(12f, 12f), style = stroke)
+                    drawCircle(color, 2.2f, Offset(12f, 12f), style = stroke)
+                    drawLine(color, Offset(12f, 2.7f), Offset(12f, 5f), 1.75f, StrokeCap.Round)
+                    drawLine(color, Offset(12f, 19f), Offset(12f, 21.3f), 1.75f, StrokeCap.Round)
+                    drawLine(color, Offset(2.7f, 12f), Offset(5f, 12f), 1.75f, StrokeCap.Round)
+                    drawLine(color, Offset(19f, 12f), Offset(21.3f, 12f), 1.75f, StrokeCap.Round)
+                }
+                Glyph.DIAGNOSTICS -> {
+                    drawRoundRect(color, Offset(3.5f, 3.5f), Size(17f, 17f), CornerRadius(3f), style = stroke)
+                    drawLine(color, Offset(7.7f, 16f), Offset(7.7f, 12f), 1.75f, StrokeCap.Round)
+                    drawLine(color, Offset(12f, 16f), Offset(12f, 8f), 1.75f, StrokeCap.Round)
+                    drawLine(color, Offset(16.3f, 16f), Offset(16.3f, 10.5f), 1.75f, StrokeCap.Round)
+                }
+                Glyph.MORE -> listOf(6f, 12f, 18f).forEach { x ->
+                    drawCircle(color, 1.5f, Offset(x, 12f))
                 }
             }
         }

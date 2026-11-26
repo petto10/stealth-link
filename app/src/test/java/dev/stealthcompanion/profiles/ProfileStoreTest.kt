@@ -4,6 +4,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -123,6 +124,58 @@ class ProfileStoreTest {
         assertThrows(IllegalArgumentException::class.java) { RgbSettings(colors = listOf(0x1000000)) }
         assertTrue(store.list().isEmpty())
     }
+
+    @Test
+    fun renamingKeepsSettingsAndSelectionAcrossStoreInstances() {
+        val backing = MemoryProfileStorage()
+        val first = ProfileStore(backing)
+        val profile = first.create("Before").copy(settings = ProfileSettings(mapping = MappingSettings(p1 = ButtonAction.A)))
+        assertTrue(first.replace(profile))
+        assertTrue(first.setActive(profile.id))
+        assertTrue(first.rename(profile.id, "  Après 🎮  "))
+        assertFalse(first.rename(UUID.randomUUID().toString(), "Unknown"))
+        val second = ProfileStore(backing)
+        assertEquals(LocalProfileCatalog(listOf(profile.copy(name = "Après 🎮")), profile.id), second.snapshot())
+        assertTrue(second.setActive(null))
+        assertNull(second.snapshot().activeProfileId)
+    }
+
+    @Test
+    fun loadsOlderLocalFilesAndKeepsExternalArchiveCompatible() {
+        val backing = MemoryProfileStorage()
+        val legacy = LocalProfile(UUID.randomUUID().toString(), "Legacy")
+        backing.write(ProfileArchive.encode(listOf(legacy)))
+        val store = ProfileStore(backing)
+        assertEquals(LocalProfileCatalog(listOf(legacy)), store.snapshot())
+        assertTrue(store.setActive(legacy.id))
+
+        val external = ByteArrayOutputStream()
+        assertEquals(1, store.exportProfiles(external))
+        val json = JSONObject(external.toString("UTF-8"))
+        assertEquals("stealth-companion-profiles", json.getString("format"))
+        assertEquals(1, json.getInt("version"))
+        assertFalse(json.has("activeProfileId"))
+        val target = ProfileStore(MemoryProfileStorage())
+        assertEquals(ProfileImportResult(1, 0, 0), target.importProfiles(external.toByteArray().inputStream()))
+        assertEquals(LocalProfileCatalog(listOf(legacy)), target.snapshot())
+    }
+
+    @Test
+    fun clearingActiveProfileAndDeletingItCommitTogether() {
+        val backing = MemoryProfileStorage()
+        val store = ProfileStore(backing)
+        val chosen = store.create("Active")
+        val remaining = store.create("Other")
+        assertTrue(store.setActive(chosen.id))
+        assertFalse(store.setActive(UUID.randomUUID().toString()))
+        backing.failWrites = true
+        assertThrows(IOException::class.java) { store.delete(chosen.id) }
+        assertEquals(LocalProfileCatalog(listOf(chosen, remaining), chosen.id), store.snapshot())
+        backing.failWrites = false
+        assertTrue(store.delete(chosen.id))
+        assertEquals(LocalProfileCatalog(listOf(remaining)), store.snapshot())
+    }
+
 
     private class MemoryProfileStorage : ProfileStorage {
         private var payload: ByteArray? = null

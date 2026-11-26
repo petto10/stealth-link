@@ -98,6 +98,10 @@ class MainActivity : AppCompatActivity() {
                 requestServiceNotification()
             }
             UiAction.StopCompanion -> companion.stop()
+            UiAction.RecoverConnection -> {
+                companion.recoverConnection()
+                requestServiceNotification()
+            }
             is UiAction.SetPaused -> companion.pause(action.value)
             is UiAction.SetLockPrivacy -> companion.setPrivacy(action.value)
             is UiAction.SetRule -> companion.setRule(action.packageName, action.rule)
@@ -105,6 +109,9 @@ class MainActivity : AppCompatActivity() {
             is UiAction.SetProbesEnabled -> companion.setProbeMode(action.value)
             is UiAction.SetRelaxedSynthetic -> companion.setRelaxedSynthetic(action.value)
             is UiAction.SetExtendedText -> companion.setExtendedText(action.value)
+            is UiAction.SetFragmentDelay -> companion.setFragmentDelay(action.value)
+            is UiAction.SetBodyByteLimit -> companion.setBodyByteLimit(action.value)
+            is UiAction.SetPaginateNotifications -> companion.setPaginateNotifications(action.value)
             is UiAction.SetNotificationsOnly -> companion.setNotificationsOnly(action.value)
             is UiAction.SetSimulatorMtu -> companion.setSimulatorMtu(action.value)
             is UiAction.RunProbe -> companion.runProbe(action.capability, action.extended)
@@ -115,6 +122,8 @@ class MainActivity : AppCompatActivity() {
             UiAction.ReadSettings -> companion.readSettings()
             is UiAction.AddProfile -> companion.addProfile(action.name)
             is UiAction.RemoveProfile -> companion.removeProfile(action.id)
+            is UiAction.RenameProfile -> companion.renameProfile(action.id, action.name)
+            is UiAction.SelectLocalProfile -> companion.selectLocalProfile(action.id)
             UiAction.ImportProfiles -> importProfiles.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
                 type = "application/json"

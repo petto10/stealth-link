@@ -1,6 +1,7 @@
 package dev.stealthcompanion.core.social
 
 import dev.stealthcompanion.core.protocol.ControllerSimulator
+import dev.stealthcompanion.core.protocol.DisplayTextPolicy
 import dev.stealthcompanion.core.protocol.ProtocolOptions
 import dev.stealthcompanion.core.protocol.SocialPayload
 import dev.stealthcompanion.core.protocol.SocialSession
@@ -78,5 +79,35 @@ class SocialPipelineTest {
         }
 
         assertEquals(listOf("Ciao — Lia", "Ciao — Lia"), display.displayed.map { it.text })
+    }
+
+    @Test fun oneGroupUpdateCanReachTheDisplayAsOrderedPagesWithoutReplayingTheUpdate() {
+        val input = IncomingNotification(
+            key = "group",
+            packageName = "lab.example.chat",
+            appName = "Chat",
+            conversation = "Squadra",
+            messages = listOf(
+                ConversationMessage("Anna", "Caffè e una nuova partita 🎮. ".repeat(3), 1),
+                ConversationMessage("Lia", "Pronti alle nove\nPortate le cuffie 🎧.", 2),
+            ),
+        )
+        val rendered = requireNotNull(SocialPolicy.render(input, AppRule(enabled = true), format = SocialFormat.EXTENDED))
+        val queue = SocialQueue(coalesceMs = 0)
+        assertTrue(queue.offer(rendered, 0))
+        val message = requireNotNull(queue.poll(0))
+        val plan = DisplayTextPolicy(bodyLimitBytes = 64, paged = true).render(SocialPayload(message.title, message.body))
+        val display = ControllerSimulator(mtu = 23, requestedMessageBytes = 64)
+        val session = SocialSession()
+
+        assertFalse(plan.truncated)
+        assertTrue(plan.pages.size > 1)
+        plan.pages.forEachIndexed { index, page ->
+            val event = requireNotNull(session.publish("${message.deliveryKey}:$index", page, 0, allowLongResponse = true))
+            requireNotNull(display.receive(event) { request, mtu -> session.respond(request, mtu, 0) })
+        }
+        assertEquals(plan.pages.map { it.title }, display.displayed.map { it.title })
+        assertEquals(message.body, display.displayed.joinToString("") { it.text })
+        assertFalse(queue.offer(rendered, 1))
     }
 }

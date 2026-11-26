@@ -2,6 +2,8 @@ package dev.stealthcompanion
 
 import android.content.Context
 import androidx.core.content.edit
+import dev.stealthcompanion.ble.BlePacingPolicy
+import dev.stealthcompanion.core.protocol.DisplayTextPolicy
 import dev.stealthcompanion.ui.CompanionMode
 import dev.stealthcompanion.ui.DisplayCapability
 import dev.stealthcompanion.ui.LanguageMode
@@ -27,8 +29,18 @@ internal class LocalPreferences(context: Context) {
         get() = data.getBoolean("privacy", true)
         set(value) { data.edit { putBoolean("privacy", value) } }
     var extendedText: Boolean
-        get() = data.getBoolean("extended_text", false)
+        get() = data.getBoolean("extended_text", true)
         set(value) { data.edit { putBoolean("extended_text", value) } }
+    var fragmentDelayMs: Int
+        get() = BlePacingPolicy.normalizeRegularDelay(data.getInt("fragment_delay_ms", BlePacingPolicy.DEFAULT_EXTENDED_DELAY_MS))
+        set(value) { data.edit { putInt("fragment_delay_ms", value) } }
+    var bodyByteLimit: Int
+        get() = data.getInt("body_byte_limit", DisplayTextPolicy.DEFAULT_BODY_LIMIT_BYTES)
+            .takeIf { it in DisplayTextPolicy.BODY_LIMIT_CHOICES } ?: DisplayTextPolicy.DEFAULT_BODY_LIMIT_BYTES
+        set(value) { data.edit { putInt("body_byte_limit", value) } }
+    var paginateNotifications: Boolean
+        get() = data.getBoolean("paginate_notifications", false)
+        set(value) { data.edit { putBoolean("paginate_notifications", value) } }
     var notificationsOnly: Boolean
         get() = data.getBoolean("notifications_only", false)
         set(value) { data.edit { putBoolean("notifications_only", value) } }

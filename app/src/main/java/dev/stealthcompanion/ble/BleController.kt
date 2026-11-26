@@ -21,6 +21,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import dev.stealthcompanion.configuration.ControllerDeviceStatus
+import dev.stealthcompanion.configuration.ControllerStatusCodec
+import dev.stealthcompanion.configuration.ControllerStatusField
 import dev.stealthcompanion.core.protocol.ProtocolOptions
 import dev.stealthcompanion.core.protocol.SocialCodec
 import dev.stealthcompanion.core.protocol.SocialPayload
@@ -35,6 +38,8 @@ import kotlin.random.Random
 @Suppress("DEPRECATION")
 internal class BleController(val context: Application) {
     private data class Target(val configuration: String, val social: String)
+    private data class StatusRead(val field: ControllerStatusField, val characteristic: BluetoothGattCharacteristic)
+    private enum class ClientStage { CONNECTING, DISCOVERING, SUBSCRIBING, READY }
 
     private val bluetooth = context.getSystemService(BluetoothManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
@@ -47,21 +52,27 @@ internal class BleController(val context: Application) {
     private var target: Target? = null
     private var social: GattSocialServer? = null
     private var client: BluetoothGatt? = null
+    private var clientStage: ClientStage? = null
     private var settingsCharacteristic: BluetoothGattCharacteristic? = null
-    private var clientTimeout: Runnable? = null
-    private var socialRetryTask: Runnable? = null
-    private var settingsRetryTask: Runnable? = null
-    private var settingsAclFallback: Runnable? = null
-    private var socialAclFallback: Runnable? = null
+    private val clientTimeout = delayedAction()
+    private val socialRetryTask = delayedAction()
+    private val settingsRetryTask = delayedAction()
+    private val settingsAclFallback = delayedAction()
+    private val socialAclFallback = delayedAction()
     private val settingsBackoff = BleReconnectBackoff()
     private val socialBackoff = BleReconnectBackoff()
     private var settingsReadyAt: Long? = null
     private var socialRegisteredAt: Long? = null
-    private var mtuRequestTimeout: Runnable? = null
+    private val mtuRequestTimeout = delayedAction()
+    private val deviceStatusTimeout = delayedAction()
+    private var deviceStatusRefreshRequested = false
+    private val deviceStatusReads = ArrayDeque<StatusRead>()
+    private var pendingDeviceStatusRead: StatusRead? = null
     private var mtuRequestAttempted = false
     private var mtuSkipCause: BleDiagnosticCause? = null
     private var awaitingSettingsRead = false
     private var longTextEnabled = false
+    private var extendedFragmentDelayMs = BlePacingPolicy.DEFAULT_EXTENDED_DELAY_MS
     private var notificationsOnly = false
     private var activeProbe: BleProbe? = null
     private var receiverRegistered = false
@@ -74,7 +85,15 @@ internal class BleController(val context: Application) {
         publish = {
             val finished = mutableState.value.settings.reading && !it.reading
             mutableState.value = mutableState.value.copy(settings = it)
-            if (finished) handler.post { maybeRequestClientMtu() }
+            val owner = client
+            if (finished && owner != null) {
+                handler.post {
+                    if (client === owner && !mutableState.value.settings.reading) {
+                        if (deviceStatusRefreshRequested) beginDeviceStatusReads(owner)
+                        else maybeRequestClientMtu()
+                    }
+                }
+            }
         },
         diagnose = ::diagnose,
         disconnected = { retryConfiguration(BleDiagnosticCause.SETTINGS_READ_FAILED) },
@@ -96,8 +115,10 @@ internal class BleController(val context: Application) {
 
     fun start(deviceAddress: String, socialAddress: String) = handler.post {
         val selected = Target(deviceAddress, socialAddress)
-        if (target == selected) {
-            if (social == null && socialRetryTask == null) rebuildSocial()
+        val existing = target
+        if (existing != null && existing == selected) {
+            if (social == null && !socialRetryTask.isPending) rebuildSocial()
+            ensureSettingsConnection(existing)
             return@post
         }
         registerReceiver()
@@ -111,6 +132,23 @@ internal class BleController(val context: Application) {
         )
         diagnose(BleDiagnosticEvent.SESSION_STARTED, null)
         rebuildSocial()
+        ensureSettingsConnection(selected)
+    }
+
+    fun recoverConnection() = handler.post {
+        val selection = target ?: return@post
+        if (!validateSession()) return@post
+        diagnose(BleDiagnosticEvent.CONNECTION_RECOVERY_REQUESTED, null)
+        socialBackoff.reset()
+        closeSocial()
+        if (!notificationsOnly && !mutableState.value.settingsConnected) {
+            settingsBackoff.reset()
+            closeConfiguration(clearSettings = false)
+        }
+        val hasSettingsEndpoint = settingsDevice(selection) != null
+        val canAttachIndependently = notificationsOnly || selection.configuration != selection.social || !hasSettingsEndpoint
+        rebuildSocial(requestAttach = canAttachIndependently)
+        ensureSettingsConnection(selection)
     }
 
     fun stop() = handler.post {
@@ -165,6 +203,18 @@ internal class BleController(val context: Application) {
         if (enabled) maybeRequestClientMtu()
     }
 
+    fun setExtendedFragmentDelayMs(delayMs: Int) {
+        val delay = BlePacingPolicy.normalizeRegularDelay(delayMs)
+        if (Looper.myLooper() === handler.looper) applyExtendedFragmentDelay(delay)
+        else handler.post { applyExtendedFragmentDelay(delay) }
+    }
+
+    private fun applyExtendedFragmentDelay(delayMs: Int) {
+        if (extendedFragmentDelayMs == delayMs) return
+        extendedFragmentDelayMs = delayMs
+        mutableState.value = mutableState.value.copy(extendedFragmentDelayMs = delayMs)
+    }
+
     fun setNotificationsOnly(enabled: Boolean) {
         if (Looper.myLooper() === handler.looper) applyNotificationsOnly(enabled)
         else handler.post { applyNotificationsOnly(enabled) }
@@ -202,7 +252,9 @@ internal class BleController(val context: Application) {
         )
         val extended = if (synthetic && longTextOverride != null) longTextOverride else longTextEnabled && !syntheticOnly
         val syntheticProbe = probe.takeIf { synthetic }
-        val result = transport.send(key, payload, synthetic, category, extended, syntheticProbe) ?: return@withContext false
+        val result = transport.send(
+            key, payload, synthetic, category, extended, syntheticProbe, extendedFragmentDelayMs,
+        ) ?: return@withContext false
         if (syntheticProbe != null) activeProbe = syntheticProbe
         try {
             result.await()
@@ -224,9 +276,11 @@ internal class BleController(val context: Application) {
 
     fun refreshSettings() {
         handler.post {
-            if (notificationsOnly || !validateSession() || !mutableState.value.settingsConnected) return@post
-            if (mtuRequestTimeout != null) awaitingSettingsRead = true
-            else settings.refresh()
+            if (notificationsOnly || !validateSession() || !mutableState.value.settingsConnected ||
+                deviceStatusRefreshRequested || pendingDeviceStatusRead != null || mutableState.value.settings.reading
+            ) return@post
+            if (mtuRequestTimeout.isPending) awaitingSettingsRead = true
+            else beginReadOnlyRefresh()
         }
     }
 
@@ -234,7 +288,7 @@ internal class BleController(val context: Application) {
         handler.post { reportDiagnostic(BleDiagnostic(0, BleDiagnosticEvent.PROBE_DETAIL_MARKED, probeId = id)) }
     }
 
-    private fun rebuildSocial() {
+    private fun rebuildSocial(requestAttach: Boolean = false) {
         val selection = target ?: return
         if (social != null || !validateSession()) return
         val socialDevice = bondedDevice(selection.social)
@@ -253,6 +307,7 @@ internal class BleController(val context: Application) {
             handler = handler,
             options = protocolOptions,
             requireEncryption = !syntheticOnlyUnencrypted,
+            recoveryPeer = socialDevice.takeIf { requestAttach },
             accepted = { device -> isApproved(device, selection.social) },
             diagnose = ::diagnose,
             detail = ::reportDiagnostic,
@@ -271,19 +326,24 @@ internal class BleController(val context: Application) {
     }
 
     private fun ensureSettingsConnection(selection: Target) {
-        if (notificationsOnly || client != null || settingsRetryTask != null || target != selection ||
-            social?.isRegistered != true || !validateSession()
+        if (notificationsOnly || client != null || settingsRetryTask.isPending || target !== selection ||
+            !validateSession()
         ) return
-        val device = bondedDevice(selection.configuration)
+        if (selection.configuration == selection.social && social?.isRegistered == false) return
+        val device = settingsDevice(selection)
         if (device == null) {
+            if (bondedDevice(selection.configuration) != null) return
             reportDiagnostic(BleDiagnostic(0, BleDiagnosticEvent.CONNECTION_FAILED, cause = BleDiagnosticCause.LINK_UNAVAILABLE))
             return
         }
         connectSettings(device)
     }
 
+    private fun settingsDevice(selection: Target): BluetoothDevice? = bondedDevice(selection.configuration)
+        ?.takeIf { device -> runCatching { deviceRole(device.name) }.getOrNull() in SETTING_DEVICE_ROLES }
+
     private fun connectSettings(device: BluetoothDevice) {
-        if (notificationsOnly || !validateSession()) return
+        if (notificationsOnly || client != null || !validateSession()) return
         mutableState.value = mutableState.value.copy(
             settingsConnecting = true,
         )
@@ -295,6 +355,7 @@ internal class BleController(val context: Application) {
             return
         }
         client = gatt
+        clientStage = ClientStage.CONNECTING
         scheduleClientTimeout()
     }
 
@@ -308,7 +369,7 @@ internal class BleController(val context: Application) {
             phase = when {
                 ready -> BlePhase.READY
                 registered -> BlePhase.WAITING_FOR_SUBSCRIPTION
-                socialRetryTask != null -> BlePhase.RETRYING
+                socialRetryTask.isPending -> BlePhase.RETRYING
                 transport != null -> BlePhase.STARTING
                 else -> previous.phase
             },
@@ -320,6 +381,7 @@ internal class BleController(val context: Application) {
             socialPeerConnected = transport?.peerConnected == true,
             notificationSourceSubscribed = transport?.notificationSourceSubscribed == true,
             dataSourceSubscribed = transport?.dataSourceSubscribed == true,
+            currentMessageLimitBytes = transport?.currentMessageLimitBytes?.takeIf { ready },
         )
     }
 
@@ -370,10 +432,8 @@ internal class BleController(val context: Application) {
     }
 
     private fun closeSocial() {
-        socialRetryTask?.let(handler::removeCallbacks)
-        socialRetryTask = null
-        socialAclFallback?.let(handler::removeCallbacks)
-        socialAclFallback = null
+        socialRetryTask.cancel()
+        socialAclFallback.cancel()
         socialRegisteredAt = null
         val server = social
         social = null
@@ -387,29 +447,32 @@ internal class BleController(val context: Application) {
             socialPeerConnected = false,
             notificationSourceSubscribed = false,
             dataSourceSubscribed = false,
+            currentMessageLimitBytes = null,
             socialRetryDelayMs = null,
         )
     }
 
     private fun closeConfiguration(clearSettings: Boolean) {
-        settingsRetryTask?.let(handler::removeCallbacks)
-        settingsRetryTask = null
-        settingsAclFallback?.let(handler::removeCallbacks)
-        settingsAclFallback = null
+        settingsRetryTask.cancel()
+        settingsAclFallback.cancel()
         settingsReadyAt = null
         cancelClientTimeout()
-        mtuRequestTimeout?.let(handler::removeCallbacks)
-        mtuRequestTimeout = null
+        mtuRequestTimeout.cancel()
+        clearDeviceStatusReads()
         mtuRequestAttempted = false
         mtuSkipCause = null
         awaitingSettingsRead = false
         settingsCharacteristic = null
         val gatt = client
         client = null
+        clientStage = null
         mutableState.value = mutableState.value.copy(
             settingsConnected = false, settingsConnecting = false, settingsRetryDelayMs = null, clientMtu = null,
         )
         settings.onLinkEnded(clearSettings)
+        if (!clearSettings && mutableState.value.settings.deviceStatus != ControllerDeviceStatus()) {
+            settings.updateDeviceStatus(ControllerDeviceStatus())
+        }
         if (gatt != null) {
             // A same-device settings client can share the physical link used by the Social server.
             // Release our client registration without explicitly disconnecting that peer.
@@ -420,52 +483,56 @@ internal class BleController(val context: Application) {
 
     private fun retryConfiguration(cause: BleDiagnosticCause, status: Int? = null) {
         val selected = target ?: return
-        if (notificationsOnly || settingsRetryTask != null) return
+        if (notificationsOnly || settingsRetryTask.isPending) return
         val delay = nextDelay(settingsBackoff, settingsReadyAt)
         closeConfiguration(clearSettings = false)
         if (!validateSession()) return
         mutableState.value = mutableState.value.copy(settingsRetryDelayMs = delay)
         reportDiagnostic(BleDiagnostic(0, BleDiagnosticEvent.SETTINGS_RETRY_SCHEDULED, status, cause, retryDelayMs = delay))
-        settingsRetryTask = Runnable {
-            settingsRetryTask = null
+        settingsRetryTask.replace(delay) {
+            if (target !== selected) return@replace
             mutableState.value = mutableState.value.copy(settingsRetryDelayMs = null)
             ensureSettingsConnection(selected)
-        }.also { handler.postDelayed(it, delay) }
+        }
     }
 
     private fun scheduleSocialRetry() {
-        if (target == null || socialRetryTask != null) return
+        val selected = target ?: return
+        if (socialRetryTask.isPending) return
         val delay = nextDelay(socialBackoff, socialRegisteredAt)
         closeSocial()
         if (!validateSession()) return
         mutableState.value = mutableState.value.copy(phase = BlePhase.RETRYING, socialRetryDelayMs = delay)
         reportDiagnostic(BleDiagnostic(0, BleDiagnosticEvent.RETRY_SCHEDULED, retryDelayMs = delay))
-        socialRetryTask = Runnable {
-            socialRetryTask = null
+        socialRetryTask.replace(delay) {
+            if (target !== selected) return@replace
             mutableState.value = mutableState.value.copy(socialRetryDelayMs = null)
             rebuildSocial()
-        }.also { handler.postDelayed(it, delay) }
+        }
+        ensureSettingsConnection(selected)
     }
 
     private fun nextDelay(backoff: BleReconnectBackoff, stableSince: Long?): Long =
         backoff.nextDelayMillis(SystemClock.elapsedRealtime(), stableSince, Random.nextLong(0, 251))
 
     private fun scheduleClientTimeout() {
-        cancelClientTimeout()
-        clientTimeout = Runnable {
+        val owner = client ?: return
+        clientTimeout.replace(CLIENT_TIMEOUT_MS) {
+            if (client !== owner) return@replace
             reportDiagnostic(BleDiagnostic(0, BleDiagnosticEvent.CONNECTION_FAILED, cause = BleDiagnosticCause.CALLBACK_TIMEOUT))
             retryConfiguration(BleDiagnosticCause.CALLBACK_TIMEOUT)
-        }.also { handler.postDelayed(it, CLIENT_TIMEOUT_MS) }
+        }
     }
 
     private fun cancelClientTimeout() {
-        clientTimeout?.let(handler::removeCallbacks)
-        clientTimeout = null
+        clientTimeout.cancel()
     }
 
     private fun maybeRequestClientMtu() {
         val featureEnabled = if (syntheticOnly) protocolOptions.allowFragmentation else longTextEnabled
-        if (notificationsOnly || !featureEnabled || mtuRequestAttempted || mutableState.value.settings.reading) return
+        if (notificationsOnly || !featureEnabled || mtuRequestAttempted || mutableState.value.settings.reading ||
+            pendingDeviceStatusRead != null || deviceStatusRefreshRequested
+        ) return
         val current = client ?: return
         val selection = target ?: return
         val sameApprovedPeer = selection.configuration == selection.social && isApproved(current.device, selection.social)
@@ -494,19 +561,101 @@ internal class BleController(val context: Application) {
             reportDiagnostic(BleDiagnostic(0, BleDiagnosticEvent.CLIENT_MTU_FAILED, cause = BleDiagnosticCause.REQUEST_NOT_QUEUED))
             return
         }
-        mtuRequestTimeout = Runnable {
+        mtuRequestTimeout.replace(MTU_TIMEOUT_MS) {
+            if (client !== current) return@replace
             reportDiagnostic(BleDiagnostic(0, BleDiagnosticEvent.CLIENT_MTU_FAILED, cause = BleDiagnosticCause.CALLBACK_TIMEOUT))
-            finishMtuRequest()
-        }.also { handler.postDelayed(it, MTU_TIMEOUT_MS) }
+            // Android can still complete an ATT operation after the deadline.
+            // A new configuration client avoids overlapping its pending operation with an explicit read.
+            retryConfiguration(BleDiagnosticCause.CALLBACK_TIMEOUT)
+        }
     }
 
     private fun finishMtuRequest() {
-        mtuRequestTimeout?.let(handler::removeCallbacks)
-        mtuRequestTimeout = null
+        mtuRequestTimeout.cancel()
         if (awaitingSettingsRead) {
             awaitingSettingsRead = false
-            settings.refresh()
+            beginReadOnlyRefresh()
         }
+    }
+
+    private fun beginReadOnlyRefresh() {
+        deviceStatusRefreshRequested = true
+        settings.refresh()
+    }
+
+    private fun beginDeviceStatusReads(gatt: BluetoothGatt) {
+        if (client !== gatt || clientStage != ClientStage.READY) return
+        deviceStatusRefreshRequested = false
+        settings.updateDeviceStatus(ControllerDeviceStatus())
+        for (field in ControllerStatusField.entries) {
+            val characteristic = gatt.getService(field.serviceUuid)?.getCharacteristic(field.characteristicUuid) ?: continue
+            if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) {
+                deviceStatusReads.addLast(StatusRead(field, characteristic))
+            }
+        }
+        nextDeviceStatusRead(gatt)
+    }
+
+    private fun nextDeviceStatusRead(gatt: BluetoothGatt) {
+        while (client === gatt && clientStage == ClientStage.READY) {
+            val read = deviceStatusReads.removeFirstOrNull()
+            if (read == null) {
+                maybeRequestClientMtu()
+                return
+            }
+            pendingDeviceStatusRead = read
+            if (!runCatching { gatt.readCharacteristic(read.characteristic) }.getOrDefault(false)) {
+                pendingDeviceStatusRead = null
+                reportDiagnostic(
+                    BleDiagnostic(0, BleDiagnosticEvent.DEVICE_STATUS_READ_FAILED, cause = BleDiagnosticCause.REQUEST_NOT_QUEUED),
+                )
+                continue
+            }
+            deviceStatusTimeout.replace(STATUS_READ_TIMEOUT_MS) {
+                if (client !== gatt || pendingDeviceStatusRead !== read) return@replace
+                reportDiagnostic(
+                    BleDiagnostic(0, BleDiagnosticEvent.DEVICE_STATUS_READ_FAILED, cause = BleDiagnosticCause.CALLBACK_TIMEOUT),
+                )
+                retryConfiguration(BleDiagnosticCause.CALLBACK_TIMEOUT)
+            }
+            return
+        }
+    }
+
+    private fun onDeviceStatusRead(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        status: Int,
+    ) = clientDispatch(gatt) {
+        val read = pendingDeviceStatusRead ?: return@clientDispatch
+        if (characteristic.service?.uuid != read.field.serviceUuid ||
+            characteristic.uuid != read.field.characteristicUuid
+        ) return@clientDispatch
+        pendingDeviceStatusRead = null
+        deviceStatusTimeout.cancel()
+        val decoded = if (status == BluetoothGatt.GATT_SUCCESS) {
+            val previous = mutableState.value.settings.deviceStatus
+            ControllerStatusCodec.decode(read.field, value, previous)
+        } else null
+        if (decoded != null) {
+            settings.updateDeviceStatus(decoded)
+            diagnose(BleDiagnosticEvent.DEVICE_STATUS_READ_COMPLETED, read.field.ordinal)
+        } else {
+            val cause = if (status == BluetoothGatt.GATT_SUCCESS) BleDiagnosticCause.REJECTED_ATTRIBUTE
+                else BleDiagnosticCause.CALLBACK_FAILURE
+            reportDiagnostic(
+                BleDiagnostic(0, BleDiagnosticEvent.DEVICE_STATUS_READ_FAILED, status, cause),
+            )
+        }
+        nextDeviceStatusRead(gatt)
+    }
+
+    private fun clearDeviceStatusReads() {
+        deviceStatusTimeout.cancel()
+        deviceStatusRefreshRequested = false
+        deviceStatusReads.clear()
+        pendingDeviceStatusRead = null
     }
 
     private fun subscribe(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic): Boolean = runCatching {
@@ -546,8 +695,10 @@ internal class BleController(val context: Application) {
                 retryConfiguration(BleDiagnosticCause.DISCONNECTED, status)
                 return@clientDispatch
             }
-            if (newState != BluetoothProfile.STATE_CONNECTED) return@clientDispatch
+            if (newState != BluetoothProfile.STATE_CONNECTED || clientStage != ClientStage.CONNECTING) return@clientDispatch
             cancelClientTimeout()
+            settingsAclFallback.cancel()
+            clientStage = ClientStage.DISCOVERING
             diagnose(BleDiagnosticEvent.CONNECTION_CONNECTED, null)
             if (!runCatching { gatt.discoverServices() }.getOrDefault(false)) {
                 reportDiagnostic(BleDiagnostic(0, BleDiagnosticEvent.CONNECTION_FAILED, cause = BleDiagnosticCause.REQUEST_NOT_QUEUED))
@@ -558,6 +709,7 @@ internal class BleController(val context: Application) {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) = clientDispatch(gatt) {
+            if (clientStage != ClientStage.DISCOVERING) return@clientDispatch
             cancelClientTimeout()
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 diagnose(BleDiagnosticEvent.CONNECTION_FAILED, status)
@@ -574,6 +726,7 @@ internal class BleController(val context: Application) {
                 return@clientDispatch
             }
             settingsCharacteristic = characteristic
+            clientStage = ClientStage.SUBSCRIBING
             if (!subscribe(gatt, characteristic)) {
                 settingsChannelMissing(BleDiagnosticCause.SUBSCRIPTION_NOT_QUEUED)
                 return@clientDispatch
@@ -583,12 +736,14 @@ internal class BleController(val context: Application) {
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) =
             clientDispatch(gatt) {
-                if (descriptor.uuid != SocialCodec.CCC_UUID ||
+                if (clientStage != ClientStage.SUBSCRIBING || descriptor.uuid != SocialCodec.CCC_UUID ||
+                    descriptor.characteristic.service?.uuid != ReadOnlyGattSettings.SERVICE_UUID ||
                     descriptor.characteristic.uuid != ReadOnlyGattSettings.CHARACTERISTIC_UUID
                 ) return@clientDispatch
                 cancelClientTimeout()
                 val characteristic = settingsCharacteristic
                 if (status == BluetoothGatt.GATT_SUCCESS && characteristic != null) {
+                    clientStage = ClientStage.READY
                     settingsReadyAt = SystemClock.elapsedRealtime()
                     settings.onLinkReady { bytes -> writeSettings(gatt, characteristic, bytes) }
                     mutableState.value = mutableState.value.copy(settingsConnected = true, settingsConnecting = false)
@@ -616,9 +771,25 @@ internal class BleController(val context: Application) {
             finishMtuRequest()
         }
 
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int,
+        ) = onDeviceStatusRead(gatt, characteristic, value.copyOf(), status)
+
+        @Deprecated("Used on Android versions below API 33")
+        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (Build.VERSION.SDK_INT < 33) {
+                onDeviceStatusRead(gatt, characteristic, characteristic.value?.copyOf() ?: byteArrayOf(), status)
+            }
+        }
+
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) =
             clientDispatch(gatt) {
-                if (characteristic.uuid == ReadOnlyGattSettings.CHARACTERISTIC_UUID) settings.onWrite(status)
+                if (clientStage == ClientStage.READY && characteristic.service?.uuid == ReadOnlyGattSettings.SERVICE_UUID &&
+                    characteristic.uuid == ReadOnlyGattSettings.CHARACTERISTIC_UUID
+                ) settings.onWrite(status)
             }
 
         override fun onCharacteristicChanged(
@@ -642,7 +813,9 @@ internal class BleController(val context: Application) {
 
     private fun acceptSettingsFrame(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) =
         clientDispatch(gatt) {
-            if (characteristic.uuid == ReadOnlyGattSettings.CHARACTERISTIC_UUID) settings.onData(value)
+            if (clientStage == ClientStage.READY && characteristic.service?.uuid == ReadOnlyGattSettings.SERVICE_UUID &&
+                characteristic.uuid == ReadOnlyGattSettings.CHARACTERISTIC_UUID
+            ) settings.onData(value)
         }
 
     private fun clientDispatch(gatt: BluetoothGatt, callback: () -> Unit) {
@@ -653,6 +826,7 @@ internal class BleController(val context: Application) {
         if (receiverRegistered) return
         val filter = IntentFilter().apply {
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
         }
@@ -675,7 +849,10 @@ internal class BleController(val context: Application) {
                         diagnose(BleDiagnosticEvent.BLUETOOTH_DISABLED, null)
                         mutableState.value = mutableState.value.copy(phase = BlePhase.BLUETOOTH_OFF)
                     }
-                    BluetoothAdapter.STATE_ON -> if (social == null && socialRetryTask == null) rebuildSocial()
+                    BluetoothAdapter.STATE_ON -> {
+                        if (social == null && !socialRetryTask.isPending) rebuildSocial()
+                        ensureSettingsConnection(selection)
+                    }
                 }
                 return
             }
@@ -687,17 +864,21 @@ internal class BleController(val context: Application) {
             val matchesSocial = device.address == selection.social
             val matchesSettings = device.address == selection.configuration
             if (!matchesSocial && !matchesSettings) return
+            if ((intent.action == BluetoothDevice.ACTION_ACL_CONNECTED || intent.action == BluetoothDevice.ACTION_ACL_DISCONNECTED) &&
+                Build.VERSION.SDK_INT >= 33 &&
+                intent.getIntExtra(BluetoothDevice.EXTRA_TRANSPORT, BluetoothDevice.TRANSPORT_AUTO) == BluetoothDevice.TRANSPORT_BREDR
+            ) return
             when (intent.action) {
+                BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                    if (isApproved(device, device.address)) observeWake(selection, matchesSocial, matchesSettings)
+                }
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                    if (Build.VERSION.SDK_INT >= 33 &&
-                        intent.getIntExtra(BluetoothDevice.EXTRA_TRANSPORT, BluetoothDevice.TRANSPORT_AUTO) ==
-                        BluetoothDevice.TRANSPORT_BREDR
-                    ) return
                     if (matchesSocial) observeSocialAclLoss(device)
                     if (matchesSettings && !notificationsOnly) observeSettingsAclLoss()
                 }
                 BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
                     val bond = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+                    if (runCatching { device.bondState }.getOrNull() != bond) return
                     if (bond == BluetoothDevice.BOND_NONE) {
                         if (matchesSettings) closeConfiguration(clearSettings = true)
                         if (matchesSocial) {
@@ -706,7 +887,7 @@ internal class BleController(val context: Application) {
                         }
                         diagnose(BleDiagnosticEvent.DEVICE_UNAVAILABLE, null)
                     } else if (bond == BluetoothDevice.BOND_BONDED) {
-                        if (matchesSocial && social == null && socialRetryTask == null) rebuildSocial()
+                        if (matchesSocial && social == null && !socialRetryTask.isPending) rebuildSocial()
                         if (matchesSettings) ensureSettingsConnection(selection)
                     }
                 }
@@ -714,25 +895,49 @@ internal class BleController(val context: Application) {
         }
     }
 
+    private fun observeWake(selection: Target, matchesSocial: Boolean, matchesSettings: Boolean) {
+        if (!validateSession()) return
+        diagnose(BleDiagnosticEvent.PEER_WAKE_OBSERVED, null)
+        if (matchesSocial) {
+            socialAclFallback.cancel()
+            if (social == null) {
+                socialRetryTask.cancel()
+                mutableState.value = mutableState.value.copy(socialRetryDelayMs = null)
+                rebuildSocial()
+            }
+        }
+        if (matchesSettings && !notificationsOnly) {
+            settingsAclFallback.cancel()
+            if (client == null) {
+                settingsRetryTask.cancel()
+                mutableState.value = mutableState.value.copy(settingsRetryDelayMs = null)
+                ensureSettingsConnection(selection)
+            }
+        }
+    }
+
     private fun observeSocialAclLoss(device: BluetoothDevice) {
         val server = social ?: return
-        if (!server.peerConnected || socialAclFallback != null) return
+        if (!server.peerConnected || socialAclFallback.isPending) return
         diagnose(BleDiagnosticEvent.SOCIAL_ACL_DISCONNECTED, null)
-        socialAclFallback = Runnable {
-            socialAclFallback = null
+        socialAclFallback.replace(ACL_CALLBACK_GRACE_MS) {
             if (social === server && server.peerConnected) server.peerDisconnected(device)
-        }.also { handler.postDelayed(it, ACL_CALLBACK_GRACE_MS) }
+        }
     }
 
     private fun observeSettingsAclLoss() {
         val current = client ?: return
-        if (settingsAclFallback != null) return
+        if (settingsAclFallback.isPending) return
         diagnose(BleDiagnosticEvent.SETTINGS_ACL_DISCONNECTED, null)
-        settingsAclFallback = Runnable {
-            settingsAclFallback = null
+        settingsAclFallback.replace(ACL_CALLBACK_GRACE_MS) {
             if (client === current) retryConfiguration(BleDiagnosticCause.ACL_DISCONNECTED)
-        }.also { handler.postDelayed(it, ACL_CALLBACK_GRACE_MS) }
+        }
     }
+
+    private fun delayedAction() = BleDelayedAction(
+        post = { task, delay -> handler.postDelayed(task, delay) },
+        remove = handler::removeCallbacks,
+    )
 
     private fun diagnose(event: BleDiagnosticEvent, status: Int?) {
         reportDiagnostic(BleDiagnostic(0, event, status))
@@ -740,8 +945,7 @@ internal class BleController(val context: Application) {
 
     private fun reportDiagnostic(diagnostic: BleDiagnostic) {
         if (diagnostic.event == BleDiagnosticEvent.PEER_CONNECTED || diagnostic.event == BleDiagnosticEvent.PEER_DISCONNECTED) {
-            socialAclFallback?.let(handler::removeCallbacks)
-            socialAclFallback = null
+            socialAclFallback.cancel()
         }
         val previous = mutableState.value
         val transport = social
@@ -769,7 +973,9 @@ internal class BleController(val context: Application) {
     }
 
     private companion object {
+        val SETTING_DEVICE_ROLES = setOf(BleDeviceRole.CONFIGURATION, BleDeviceRole.BOTH)
         const val CLIENT_TIMEOUT_MS = 12_000L
+        const val STATUS_READ_TIMEOUT_MS = 4_000L
         const val MTU_TIMEOUT_MS = 4_000L
         const val ACL_CALLBACK_GRACE_MS = 400L
         const val DIAGNOSTIC_LIMIT = 1024

@@ -189,4 +189,14 @@ class SocialQueueTest {
         queue.remove(message.key)
         assertTrue(queue.offer(message, 301))
     }
+
+    @Test
+    fun groupLayoutOnlyChangesDoNotReplayDispatchedExtendedText() {
+        val queue = SocialQueue(coalesceMs = 0)
+        val source = ConversationMessage("Lia Rossi", "Prima\nSeconda", 1)
+        assertTrue(queue.offer(conversation(source), 0))
+        assertEquals("Prima — Lia Rossi\nSeconda", queue.poll(0)?.body)
+        assertFalse(queue.offer(conversation(source.copy(sender = "Lia  Rossi", text = "Prima \n \n Seconda")), 1))
+        assertNull(queue.poll(1))
+    }
 }

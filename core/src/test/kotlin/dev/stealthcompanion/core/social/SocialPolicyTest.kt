@@ -141,6 +141,45 @@ class SocialPolicyTest {
     }
 
     @Test
+    fun extendedCompactsBlankRowsAndLayoutSpacesWhileKeepingAllContentLines() {
+        val notification = source.copy(
+            appName = " Esempio\t Mobile ",
+            title = "Avvisi\r\n rete",
+            text = "  Caffè    pronto  \r\n\t\r\n  Già\u00a0 qui 👩🏽‍💻 \u2028 Porta il cavo \u2029  Torno subito  ",
+            sender = " Lia \t Rossi ",
+        )
+        val extended = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
+        assertEquals("Avvisi rete · Esempio Mobile", extended?.title)
+        assertEquals("Caffè pronto — Lia Rossi\nGià qui 👩🏽‍💻\nPorta il cavo\nTorno subito", extended?.body)
+
+        val compact = SocialPolicy.render(notification, allowed)
+        assertEquals("Avvisi\n rete · Esempio\t Mobile", compact?.title)
+        assertEquals(
+            "Caffè    pronto  \n\t\n  Già\u00a0 qui 👩🏽‍💻 \u2028 Porta il cavo \u2029  Torno subito — Lia \t Rossi",
+            compact?.body,
+        )
+    }
+
+    @Test
+    fun extendedKeepsASenderSignatureAtItsAuthoredLine() {
+        val notification = source.copy(sender = "Ada", text = "Caffè pronto \n\n   — Ada")
+        val extended = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
+        assertEquals("Caffè pronto\n— Ada", extended?.body)
+    }
+
+    @Test
+    fun extendedNormalizesGroupLabelsWithoutAddingDuplicateContext() {
+        val notification = source.copy(
+            appName = " Esempio\tMobile ",
+            conversation = "Esempio\u00a0 Mobile · Squadra\nA",
+            messages = listOf(ConversationMessage(" Lia  Rossi ", "In cima  \n\n  In fondo", 1)),
+        )
+        val extended = SocialPolicy.render(notification, allowed, format = SocialFormat.EXTENDED)
+        assertEquals("Esempio Mobile · Squadra A", extended?.title)
+        assertEquals("In cima — Lia Rossi\nIn fondo", extended?.body)
+    }
+
+    @Test
     fun bodyOnlyCanHideTheApplicationNameWithLocalizedTitleFallback() {
         val notification = source.copy(title = null, text = "Ciao")
         val rendered = SocialPolicy.render(notification, allowed.copy(includeAppName = false), privateText = "Avviso")

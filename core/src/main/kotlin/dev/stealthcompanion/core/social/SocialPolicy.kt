@@ -101,12 +101,16 @@ object SocialPolicy {
             return null
         }
 
-        val app = (clean(input.appName) ?: clean(input.packageName))?.takeIf { rule.includeAppName }
-        val conversation = clean(input.conversation)
-        val sender = clean(input.sender)
-        val title = clean(input.title)
+        val app = (clean(input.appName, format) ?: clean(input.packageName, format))?.takeIf { rule.includeAppName }
+        val conversation = clean(input.conversation, format)
+        val sender = clean(input.sender, format)
+        val title = clean(input.title, format)
         val messages = input.messages.asSequence()
-            .mapNotNull { message -> clean(message.text)?.let { message.copy(text = it, sender = clean(message.sender)) } }
+            .mapNotNull { message ->
+                clean(message.text, format, preserveLines = true)?.let { text ->
+                    message.copy(text = text, sender = clean(message.sender, format))
+                }
+            }
             .filter { message ->
                 matchesRule(message.sender, message.contactId, rule.allowedContacts, rule.blockedContacts)
             }
@@ -128,7 +132,7 @@ object SocialPolicy {
         }
 
         val subject = conversation ?: title ?: sender
-        val text = clean(input.text)
+        val text = clean(input.text, format, preserveLines = true)
         if (subject == null && text == null) return null
         val displayTitle = formatTitle(subject, app, privateText, format)
         val body = when {
@@ -165,12 +169,23 @@ object SocialPolicy {
 
     private fun normalizeLabel(value: String?): String? = clean(value)?.let(::displayLabelKey)
 
-    private fun clean(value: String?): String? {
+    private fun clean(
+        value: String?,
+        format: SocialFormat = SocialFormat.COMPACT,
+        preserveLines: Boolean = false,
+    ): String? {
         if (value.isNullOrBlank()) return null
         val text = value.replace("\r\n", "\n").replace('\r', '\n')
             .filter { it == '\n' || it == '\t' || !it.isISOControl() }
             .trim()
-        return Normalizer.normalize(text, Normalizer.Form.NFC).takeIf(String::isNotEmpty)
+        val normalized = Normalizer.normalize(text, Normalizer.Form.NFC)
+        if (format == SocialFormat.COMPACT) return normalized.takeIf(String::isNotEmpty)
+        val separator = if (preserveLines) "\n" else " "
+        return displayLineBreak.splitToSequence(normalized)
+            .map { displayHorizontalWhitespace.replace(it.trim(), " ") }
+            .filter(String::isNotEmpty)
+            .joinToString(separator)
+            .takeIf(String::isNotEmpty)
     }
 }
 
@@ -196,16 +211,24 @@ private fun formatExtendedBody(
         (previousSender != null && displayLabelKey(previousSender) == displayLabelKey(sender))) {
         return text
     }
-    return formatBody(text, sender)
+    val firstLineEnd = text.indexOf('\n')
+    if (firstLineEnd < 0) return formatBody(text, sender)
+    return formatBody(text.substring(0, firstLineEnd), sender) + text.substring(firstLineEnd)
 }
 
 private const val HORIZONTAL_SPACE = "[\\p{Z}\\t]"
 private val inlineLabelSeparator = Regex("\\n|$HORIZONTAL_SPACE*[:·|]$HORIZONTAL_SPACE+|$HORIZONTAL_SPACE+[-–—]$HORIZONTAL_SPACE+")
 private val displayLabelWhitespace = Regex("[\\p{Z}\\s]+")
+private val displayHorizontalWhitespace = Regex("[\\p{Zs}\\t]+")
+private val displayLineBreak = Regex("[\\n\\u2028\\u2029]")
 
 private fun hasDisplayLabel(value: String, label: String): Boolean {
     val expected = displayLabelKey(label)
-    return displayLabelKey(value) == expected || inlineLabelSeparator.splitToSequence(value).any { displayLabelKey(it) == expected }
+    if (displayLabelKey(value) == expected) return true
+    return inlineLabelSeparator.splitToSequence(value).any {
+        val candidate = displayLabelKey(it)
+        candidate == expected || candidate.removePrefix("— ") == expected
+    }
 }
 
 private fun displayLabelKey(value: String): String = value.trim().replace(displayLabelWhitespace, " ").lowercase(Locale.ROOT)

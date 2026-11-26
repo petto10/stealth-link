@@ -10,42 +10,59 @@ import java.util.UUID
 
 data class ProfileImportResult(val added: Int, val skipped: Int, val renamedIds: Int)
 
+data class LocalProfileCatalog(val profiles: List<LocalProfile>, val activeProfileId: String? = null)
+
 class ProfileStore internal constructor(private val storage: ProfileStorage) {
     constructor(context: Context) : this(
         AtomicProfileStorage(File(context.noBackupFilesDir, "local-profiles.json")),
     )
 
-    fun list(): List<LocalProfile> = synchronized(lock) { read() }
+    fun list(): List<LocalProfile> = snapshot().profiles
+
+    fun snapshot(): LocalProfileCatalog = synchronized(lock) { read() }
 
     fun create(name: String): LocalProfile = synchronized(lock) {
-        val profiles = read()
+        val catalog = read()
         var id: String
         do {
             id = UUID.randomUUID().toString()
-        } while (profiles.any { it.id == id })
+        } while (catalog.profiles.any { it.id == id })
 
         val created = LocalProfile(id, name.trim())
-        write(profiles + created)
+        write(catalog.copy(profiles = catalog.profiles + created))
         created
     }
 
-    fun replace(profile: LocalProfile): Boolean = synchronized(lock) {
-        val profiles = read()
-        val index = profiles.indexOfFirst { it.id == profile.id }
+    fun replace(profile: LocalProfile): Boolean = updateProfile(profile.id) { profile }
+
+    fun rename(id: String, name: String): Boolean = updateProfile(id) { it.copy(name = name.trim()) }
+
+    private fun updateProfile(id: String, transform: (LocalProfile) -> LocalProfile): Boolean = synchronized(lock) {
+        val catalog = read()
+        val profiles = catalog.profiles
+        val index = profiles.indexOfFirst { it.id == id }
         if (index == -1) return@synchronized false
+        val profile = transform(profiles[index])
         if (profiles[index] != profile) {
             val updated = profiles.toMutableList()
             updated[index] = profile
-            write(updated)
+            write(catalog.copy(profiles = updated))
         }
         true
     }
 
+    fun setActive(id: String?): Boolean = synchronized(lock) {
+        val catalog = read()
+        if (id != null && catalog.profiles.none { it.id == id }) return@synchronized false
+        if (catalog.activeProfileId != id) write(catalog.copy(activeProfileId = id))
+        true
+    }
+
     fun delete(id: String): Boolean = synchronized(lock) {
-        val profiles = read()
-        val remaining = profiles.filterNot { it.id == id }
-        if (remaining.size == profiles.size) return@synchronized false
-        write(remaining)
+        val catalog = read()
+        val remaining = catalog.profiles.filterNot { it.id == id }
+        if (remaining.size == catalog.profiles.size) return@synchronized false
+        write(LocalProfileCatalog(remaining, catalog.activeProfileId.takeUnless { it == id }))
         true
     }
 
@@ -58,7 +75,8 @@ class ProfileStore internal constructor(private val storage: ProfileStorage) {
     fun importProfiles(input: InputStream): ProfileImportResult {
         val incoming = ProfileArchive.decode(input)
         return synchronized(lock) {
-            val profiles = read().associateByTo(linkedMapOf()) { it.id }
+            val catalog = read()
+            val profiles = catalog.profiles.associateByTo(linkedMapOf()) { it.id }
             var added = 0
             var skipped = 0
             var renamedIds = 0
@@ -72,7 +90,7 @@ class ProfileStore internal constructor(private val storage: ProfileStorage) {
                     if (resolved.id != profile.id) renamedIds++
                 }
             }
-            if (added > 0) write(profiles.values.toList())
+            if (added > 0) write(catalog.copy(profiles = profiles.values.toList()))
             ProfileImportResult(added, skipped, renamedIds)
         }
     }
@@ -93,10 +111,10 @@ class ProfileStore internal constructor(private val storage: ProfileStorage) {
         }
     }
 
-    private fun read(): List<LocalProfile> = storage.open()?.use { ProfileArchive.decode(it) } ?: emptyList()
+    private fun read(): LocalProfileCatalog = storage.open()?.use(ProfileArchive::decodeLocal) ?: LocalProfileCatalog(emptyList())
 
-    private fun write(profiles: List<LocalProfile>) {
-        storage.write(ProfileArchive.encode(profiles))
+    private fun write(catalog: LocalProfileCatalog) {
+        storage.write(ProfileArchive.encodeLocal(catalog))
     }
 
     private companion object {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0-alpha
+
+- Testo esteso come impostazione iniziale, con limite del corpo a 112 byte UTF‑8, intervallo di 25 ms fra frammenti e pagine numerate facoltative.
+- Preferenze esplicite di trasporto conservate durante l’aggiornamento. I campioni del Laboratorio mantengono i propri limiti e intervalli.
+- Ripristino manuale del collegamento con la stessa associazione Bluetooth e nuova navigazione Home, Notifiche, Profili e Altro.
+- Pannello Configurazione in sola lettura, con letture facoltative di energia, LED di carica, batteria e revisioni. Rinomina e selezione dei profili locali.
+- Documentato il riscontro riferito sulla 0.2.1 con dettaglio completo a 32 byte, più righe, scorrimento e una soglia visibile intorno a 120 caratteri ASCII sui campioni lunghi.
+
+[Note 0.3.0-alpha in italiano e inglese](docs/releases/v0.3.0-alpha.md)
+
 ## 0.2.1-alpha
 
 - Prove di lunghezza del corpo da 12 a 255 byte e campioni distinti per ASCII, accenti, emoji e ritorni a capo.

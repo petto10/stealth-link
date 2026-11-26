@@ -5,9 +5,11 @@ import android.content.Intent
 import android.os.Build
 import dev.stealthcompanion.core.protocol.ProtocolOptions
 import kotlinx.coroutines.flow.StateFlow
+import java.util.concurrent.atomic.AtomicReference
 
 object BleRuntime {
     private lateinit var controller: BleController
+    private val activeService = AtomicReference<SocialConnectionService?>(null)
 
     @Synchronized
     fun init(application: Application) {
@@ -33,9 +35,12 @@ object BleRuntime {
     }
 
     fun stop() {
+        activeService.set(null)
         controller.context.stopService(serviceIntent())
         controller.stop()
     }
+
+    fun recoverConnection() = controller.recoverConnection()
 
     fun setProbeOptions(
         options: ProtocolOptions = ProtocolOptions(),
@@ -43,6 +48,7 @@ object BleRuntime {
     ) = controller.setProbeOptions(options, syntheticOnlyUnencrypted)
 
     fun setLongTextEnabled(enabled: Boolean) = controller.setLongTextEnabled(enabled)
+    fun setExtendedFragmentDelayMs(delayMs: Int) = controller.setExtendedFragmentDelayMs(delayMs)
     fun setNotificationsOnly(enabled: Boolean) = controller.setNotificationsOnly(enabled)
     internal fun markProbeDetail(id: Long) = controller.markProbeDetail(id)
 
@@ -92,6 +98,8 @@ object BleRuntime {
         appendLine("social_server_retries=${current.socialServerRetries}")
         appendLine("synthetic_only=${current.syntheticOnly}")
         appendLine("long_text_enabled=${current.longTextEnabled}")
+        appendLine("extended_fragment_delay_ms=${current.extendedFragmentDelayMs}")
+        appendLine("current_message_limit_bytes=${current.currentMessageLimitBytes ?: "unknown"}")
         appendLine("attribute_requests=${current.attributeRequests}")
         appendLine("attribute_requested_bytes_total=${current.requestedBytesTotal}")
         appendLine("attribute_declared_bytes_total=${current.declaredBytesTotal}")
@@ -151,9 +159,13 @@ object BleRuntime {
 
     private fun serviceIntent() = Intent(controller.context, SocialConnectionService::class.java)
 
-    internal fun serviceStarted(deviceAddress: String, socialAddress: String?) =
+    internal fun serviceStarted(owner: SocialConnectionService, deviceAddress: String, socialAddress: String?) {
+        activeService.set(owner)
         controller.start(deviceAddress, socialAddress ?: deviceAddress)
+    }
 
-    internal fun serviceStopped() = controller.stop()
+    internal fun serviceStopped(owner: SocialConnectionService) {
+        if (activeService.compareAndSet(owner, null)) controller.stop()
+    }
     internal fun foregroundFailed() = controller.foregroundFailed()
 }

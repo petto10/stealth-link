@@ -68,11 +68,25 @@ data class ProfileUi(val id: String, val name: String)
 
 data class ProfilesUi(
     val local: List<ProfileUi> = emptyList(),
+    val selectedLocalProfileId: String? = null,
     val activeSlot: Int? = null,
     val slotNames: Map<Int, String> = emptyMap(),
+)
+
+data class ConfigurationUi(
+    val connected: Boolean = false,
+    val reading: Boolean = false,
+    val complete: Boolean = false,
     val powerMode: Int? = null,
     val displayBrightness: Int? = null,
-    val sleepMinutes: Int? = null,
+    val ledBrightness: Int? = null,
+    val screenTimeoutMinutes: Int? = null,
+    val sleepTimeoutMinutes: Int? = null,
+    val chargeLedBrightness: Int? = null,
+    val batteryPercent: Int? = null,
+    val firmwareRevision: String? = null,
+    val hardwareRevision: String? = null,
+    val softwareRevision: String? = null,
 )
 
 data class StealthUiState(
@@ -91,9 +105,13 @@ data class StealthUiState(
     val preview: DisplayPreviewUi? = null,
     val diagnostics: DiagnosticsUi = DiagnosticsUi(),
     val profiles: ProfilesUi = ProfilesUi(),
+    val configuration: ConfigurationUi = ConfigurationUi(),
     val probesEnabled: Boolean = false,
     val relaxedSynthetic: Boolean = false,
-    val extendedText: Boolean = false,
+    val extendedText: Boolean = true,
+    val fragmentDelayMs: Int = 25,
+    val bodyByteLimit: Int = 112,
+    val paginateNotifications: Boolean = false,
     val simulatorMtu: Int = 23,
     val lastLengthProbeId: Long? = null,
     val lastLengthProbeOutcome: LengthProbeOutcome? = null,
@@ -113,6 +131,7 @@ sealed interface UiAction {
     data class SetNotificationsOnly(val value: Boolean) : UiAction
     data object StartCompanion : UiAction
     data object StopCompanion : UiAction
+    data object RecoverConnection : UiAction
     data class SetPaused(val value: Boolean) : UiAction
     data class SetLockPrivacy(val value: Boolean) : UiAction
     data class SetRule(val packageName: String, val rule: RuleUi) : UiAction
@@ -120,6 +139,9 @@ sealed interface UiAction {
     data class SetProbesEnabled(val value: Boolean) : UiAction
     data class SetRelaxedSynthetic(val value: Boolean) : UiAction
     data class SetExtendedText(val value: Boolean) : UiAction
+    data class SetFragmentDelay(val value: Int) : UiAction
+    data class SetBodyByteLimit(val value: Int) : UiAction
+    data class SetPaginateNotifications(val value: Boolean) : UiAction
     data class SetSimulatorMtu(val value: Int) : UiAction
     data class RunProbe(val capability: DisplayCapability, val extended: Boolean? = null) : UiAction
     data class SendLengthProbe(val spec: LengthProbe, val extended: Boolean) : UiAction
@@ -128,6 +150,8 @@ sealed interface UiAction {
     data object ExportDiagnostics : UiAction
     data object ReadSettings : UiAction
     data class AddProfile(val name: String) : UiAction
+    data class RenameProfile(val id: String, val name: String) : UiAction
+    data class SelectLocalProfile(val id: String?) : UiAction
     data class RemoveProfile(val id: String) : UiAction
     data object ImportProfiles : UiAction
     data object ExportProfiles : UiAction

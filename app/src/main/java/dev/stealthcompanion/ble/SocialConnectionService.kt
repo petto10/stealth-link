@@ -44,12 +44,12 @@ class SocialConnectionService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        BleRuntime.serviceStarted(address, intent.getStringExtra(SOCIAL_ADDRESS))
+        BleRuntime.serviceStarted(this, address, intent.getStringExtra(SOCIAL_ADDRESS))
         return START_REDELIVER_INTENT
     }
 
     override fun onDestroy() {
-        BleRuntime.serviceStopped()
+        BleRuntime.serviceStopped(this)
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

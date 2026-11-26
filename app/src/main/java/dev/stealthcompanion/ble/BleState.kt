@@ -1,5 +1,7 @@
 package dev.stealthcompanion.ble
 
+import dev.stealthcompanion.configuration.ControllerDeviceStatus
+import dev.stealthcompanion.configuration.PowerManagementRead
 import dev.stealthcompanion.core.protocol.SocialAttribute
 
 enum class BlePhase {
@@ -33,6 +35,9 @@ data class ReadOnlySettings(
     val system: ReadOnlySystem? = null,
     val reading: Boolean = false,
     val complete: Boolean = false,
+    val powerManagement: PowerManagementRead? = null,
+    val chargeLedBrightness: Int? = null,
+    val deviceStatus: ControllerDeviceStatus = ControllerDeviceStatus(),
 )
 
 data class BleState(
@@ -76,6 +81,8 @@ data class BleState(
     val wireBytesSentTotal: Long = 0,
     val lastDeclaredTitleBytes: Int? = null,
     val lastDeclaredBodyBytes: Int? = null,
+    val extendedFragmentDelayMs: Int = BlePacingPolicy.DEFAULT_EXTENDED_DELAY_MS,
+    val currentMessageLimitBytes: Int? = null,
 )
 
 enum class BleDiagnosticEvent {
@@ -83,6 +90,10 @@ enum class BleDiagnosticEvent {
     SESSION_STOPPED,
     PERMISSION_MISSING,
     BLUETOOTH_DISABLED,
+    CONNECTION_RECOVERY_REQUESTED,
+    PEER_WAKE_OBSERVED,
+    SOCIAL_ATTACH_REQUESTED,
+    SOCIAL_ATTACH_FAILED,
     DEVICE_UNAVAILABLE,
     FOREGROUND_FAILED,
     SERVER_OPENED,
@@ -121,6 +132,8 @@ enum class BleDiagnosticEvent {
     SETTINGS_READ_REQUESTED,
     SETTINGS_READ_COMPLETED,
     SETTINGS_READ_PARTIAL,
+    DEVICE_STATUS_READ_COMPLETED,
+    DEVICE_STATUS_READ_FAILED,
     SETTINGS_ACL_DISCONNECTED,
     SOCIAL_ACL_DISCONNECTED,
     NOTIFICATIONS_ONLY_CHANGED,

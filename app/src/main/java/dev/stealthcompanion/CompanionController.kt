@@ -10,6 +10,7 @@ import dev.stealthcompanion.ble.BlePhase
 import dev.stealthcompanion.ble.BleProbe
 import dev.stealthcompanion.ble.BleRuntime
 import dev.stealthcompanion.core.protocol.ControllerSimulator
+import dev.stealthcompanion.core.protocol.DisplayTextPolicy
 import dev.stealthcompanion.core.protocol.LengthProbe
 import dev.stealthcompanion.core.protocol.ProtocolOptions
 import dev.stealthcompanion.core.protocol.SocialCodec
@@ -23,6 +24,7 @@ import dev.stealthcompanion.core.social.SocialPolicy
 import dev.stealthcompanion.core.social.SocialQueue
 import dev.stealthcompanion.profiles.ProfileStore
 import dev.stealthcompanion.ui.CompanionMode
+import dev.stealthcompanion.ui.ConfigurationUi
 import dev.stealthcompanion.ui.ConnectionState
 import dev.stealthcompanion.ui.ControllerRole
 import dev.stealthcompanion.ui.ControllerUi
@@ -86,20 +88,27 @@ internal class CompanionController(private val context: Context) {
             language = preferences.language,
             privacyWhileLocked = preferences.privacyWhileLocked,
             extendedText = preferences.extendedText,
+            fragmentDelayMs = preferences.fragmentDelayMs,
+            bodyByteLimit = preferences.bodyByteLimit,
+            paginateNotifications = preferences.paginateNotifications,
             notificationsOnly = preferences.notificationsOnly,
             observations = preferences.observations(),
         ),
     )
     val state = mutableState.asStateFlow()
     private var activeDelivery: Job? = null
+    private var activePersonalKey: String? = null
     private var serial = 0L
     private var sent = 0
     private var transportDrops = 0
     private var unreadable = 0
+    private var personalPagesSent = 0L
+    private var truncatedPlans = 0L
     private var simulatedSample: DiagnosticsUi? = null
 
     init {
         BleRuntime.setLongTextEnabled(preferences.extendedText)
+        BleRuntime.setExtendedFragmentDelayMs(preferences.fragmentDelayMs)
         BleRuntime.setNotificationsOnly(preferences.notificationsOnly)
         rules.forEach { (id, rule) -> apps[id] = ObservedAppUi(id, id, rule = rule) }
         updateApps()
@@ -111,6 +120,7 @@ internal class CompanionController(private val context: Context) {
                         discardQueuedTests { it.lengthRun != null }
                     }
                     update { ui ->
+                        val settings = status.settings
                         ui.copy(
                             isRunning = status.phase !in setOf(BlePhase.IDLE, BlePhase.PERMISSION_REQUIRED),
                             connection = when {
@@ -122,12 +132,24 @@ internal class CompanionController(private val context: Context) {
                                     ConnectionState.UNAVAILABLE
                                 else -> ConnectionState.CONNECTING
                             },
+                            configuration = ConfigurationUi(
+                                connected = status.settingsConnected,
+                                reading = settings.reading,
+                                complete = settings.complete,
+                                powerMode = settings.powerManagement?.powerMode ?: settings.system?.powerMode,
+                                displayBrightness = settings.powerManagement?.screenBrightness ?: settings.system?.screenBrightness,
+                                ledBrightness = settings.system?.ledBrightness,
+                                screenTimeoutMinutes = settings.powerManagement?.screenTimeoutMinutes ?: settings.system?.screenTimeoutMinutes,
+                                sleepTimeoutMinutes = settings.powerManagement?.sleepTimeoutMinutes ?: settings.system?.sleepTimeoutMinutes,
+                                chargeLedBrightness = settings.chargeLedBrightness ?: settings.system?.chargeLedBrightness,
+                                batteryPercent = settings.deviceStatus.batteryPercent,
+                                firmwareRevision = settings.deviceStatus.firmwareRevision,
+                                hardwareRevision = settings.deviceStatus.hardwareRevision,
+                                softwareRevision = settings.deviceStatus.softwareRevision,
+                            ),
                             profiles = ui.profiles.copy(
-                                activeSlot = status.settings.activeSlot,
-                                slotNames = status.settings.profiles,
-                                powerMode = status.settings.system?.powerMode,
-                                displayBrightness = status.settings.system?.screenBrightness,
-                                sleepMinutes = status.settings.system?.sleepTimeoutMinutes,
+                                activeSlot = settings.activeSlot,
+                                slotNames = settings.profiles,
                             ),
                         )
                     }
@@ -187,17 +209,25 @@ internal class CompanionController(private val context: Context) {
                 privateText = privateText(),
                 format = if (ui.extendedText) SocialFormat.EXTENDED else SocialFormat.COMPACT,
             )
-            if (message == null) queue.remove(input.key)
-            else queue.offer(message, SystemClock.elapsedRealtime())
+            if (message == null) {
+                removeQueuedNotification(input.key)
+            } else {
+                queue.offer(message, SystemClock.elapsedRealtime())
+            }
             signal()
         }
     }
 
     fun remove(key: String) {
         scope.launch {
-            queue.remove(key)
+            removeQueuedNotification(key)
             signal()
         }
+    }
+
+    private fun removeQueuedNotification(key: String) {
+        queue.remove(key)
+        if (activePersonalKey == key) activeDelivery?.cancel()
     }
 
     fun recordUnreadable() {
@@ -215,8 +245,8 @@ internal class CompanionController(private val context: Context) {
                 connection = if (mode == CompanionMode.SIMULATOR) ConnectionState.READY else ConnectionState.IDLE,
                 lastLengthProbeId = null,
                 lastLengthProbeOutcome = null,
-                profiles = ui.profiles.copy(activeSlot = null, slotNames = emptyMap(), powerMode = null,
-                    displayBrightness = null, sleepMinutes = null),
+                configuration = ConfigurationUi(),
+                profiles = ui.profiles.copy(activeSlot = null, slotNames = emptyMap()),
             )
         }
         signal()
@@ -265,7 +295,26 @@ internal class CompanionController(private val context: Context) {
         discardPrivateData()
         BleRuntime.stop()
         BleRuntime.setProbeOptions()
-        update { it.copy(isRunning = false, connection = ConnectionState.IDLE, preview = null, probesEnabled = false, relaxedSynthetic = false) }
+        update { ui ->
+            ui.copy(
+                isRunning = false, connection = ConnectionState.IDLE, preview = null,
+                probesEnabled = false, relaxedSynthetic = false, configuration = ConfigurationUi(),
+                profiles = ui.profiles.copy(activeSlot = null, slotNames = emptyMap()),
+            )
+        }
+        signal()
+    }
+
+    fun recoverConnection() {
+        val ui = state.value
+        if (ui.mode != CompanionMode.CONTROLLER || !ui.bluetoothPermission) return
+        if (!ui.isRunning) {
+            start()
+            return
+        }
+        activeDelivery?.cancel()
+        discardQueuedTests { true }
+        BleRuntime.recoverConnection()
         signal()
     }
 
@@ -288,6 +337,24 @@ internal class CompanionController(private val context: Context) {
         BleRuntime.setLongTextEnabled(value)
         update { it.copy(extendedText = value) }
         signal()
+    }
+
+    fun setFragmentDelay(value: Int) {
+        if (value !in LengthProbe.SUPPORTED_DELAYS) return
+        preferences.fragmentDelayMs = value
+        BleRuntime.setExtendedFragmentDelayMs(value)
+        update { it.copy(fragmentDelayMs = value) }
+    }
+
+    fun setBodyByteLimit(value: Int) {
+        if (value !in DisplayTextPolicy.BODY_LIMIT_CHOICES) return
+        preferences.bodyByteLimit = value
+        update { it.copy(bodyByteLimit = value) }
+    }
+
+    fun setPaginateNotifications(value: Boolean) {
+        preferences.paginateNotifications = value
+        update { it.copy(paginateNotifications = value) }
     }
 
     fun setNotificationsOnly(value: Boolean) {
@@ -406,9 +473,16 @@ internal class CompanionController(private val context: Context) {
 
     fun refreshProfiles() {
         scope.launch {
-            val rows = withContext(Dispatchers.IO) { runCatching { profiles.list() } }
-            rows.onSuccess { items ->
-                update { it.copy(profiles = it.profiles.copy(local = items.map { ProfileUi(it.id, it.name) })) }
+            val rows = withContext(Dispatchers.IO) { runCatching { profiles.snapshot() } }
+            rows.onSuccess { catalog ->
+                update { ui ->
+                    ui.copy(
+                        profiles = ui.profiles.copy(
+                            local = catalog.profiles.map { ProfileUi(it.id, it.name) },
+                            selectedLocalProfileId = catalog.activeProfileId,
+                        ),
+                    )
+                }
             }.onFailure { tell(UiFeedback.FILE_ERROR) }
         }
     }
@@ -417,14 +491,23 @@ internal class CompanionController(private val context: Context) {
 
     fun removeProfile(id: String) = editProfiles { profiles.delete(id) }
 
+    fun renameProfile(id: String, name: String) = editProfiles { check(profiles.rename(id, name)) }
+
+    fun selectLocalProfile(id: String?) = editProfiles { check(profiles.setActive(id)) }
+
     fun tell(message: UiFeedback?) = update { it.copy(feedback = message) }
 
     fun diagnostics(): String {
         val current = queue.stats
         return buildString {
-            appendLine("Stealth Link / diagnostics v3")
+            appendLine("Stealth Link / diagnostics v4")
             appendLine("mode=${state.value.mode}")
             appendLine("extended_text=${state.value.extendedText}")
+            appendLine("normal_fragment_delay_ms=${state.value.fragmentDelayMs}")
+            appendLine("normal_body_limit_bytes=${state.value.bodyByteLimit}")
+            appendLine("normal_pagination=${state.value.paginateNotifications}")
+            appendLine("normal_pages_completed=$personalPagesSent")
+            appendLine("normal_truncated_plans=$truncatedPlans")
             if (state.value.mode == CompanionMode.SIMULATOR) {
                 appendLine("simulator_mtu=${state.value.simulatorMtu}")
                 simulatedSample?.let { sample ->
@@ -456,6 +539,7 @@ internal class CompanionController(private val context: Context) {
     }
 
     private fun discardPrivateData() {
+        if (activePersonalKey != null) activeDelivery?.cancel()
         queue.clear()
         BleRuntime.discardPersonal()
         signal()
@@ -505,7 +589,14 @@ internal class CompanionController(private val context: Context) {
             if (ready && !ui.userPaused && !ui.probesEnabled) {
                 val next = queue.poll(now)
                 if (next != null) {
-                    runDelivery { if (deliverPersonal(next, ui)) sent++ else transportDrops++ }
+                    runDelivery {
+                        activePersonalKey = next.key
+                        try {
+                            if (deliverPersonal(next, ui)) sent++ else transportDrops++
+                        } finally {
+                            activePersonalKey = null
+                        }
+                    }
                     signal()
                     continue
                 }
@@ -527,13 +618,34 @@ internal class CompanionController(private val context: Context) {
     }
 
     private suspend fun deliverPersonal(message: SocialMessage, ui: StealthUiState): Boolean {
-        val content = if (ui.privacyWhileLocked && phoneLocked()) {
-            message.copy(title = privateText(), body = privateText())
-        } else message
-        return when (ui.mode) {
-            CompanionMode.SIMULATOR -> simulate(content, ProtocolOptions(), 4, false, ui.extendedText) != null
-            CompanionMode.CONTROLLER -> BleRuntime.send(content.deliveryKey, content.title, content.body, content.packageName)
+        val lockedAtStart = ui.privacyWhileLocked && phoneLocked()
+        val hiddenText = if (lockedAtStart) privateText() else null
+        val payload = SocialPayload(hiddenText ?: message.title, hiddenText ?: message.body)
+        val peerLimit = if (ui.mode == CompanionMode.CONTROLLER) BleRuntime.state.value.currentMessageLimitBytes else null
+        val bodyLimit = minOf(ui.bodyByteLimit, peerLimit?.coerceIn(1, 255) ?: ui.bodyByteLimit)
+        val pages = if (ui.extendedText) {
+            DisplayTextPolicy(bodyLimitBytes = bodyLimit, paged = ui.paginateNotifications && !lockedAtStart)
+                .render(payload).also { if (it.truncated) truncatedPlans++ }.pages
+        } else {
+            listOf(payload)
         }
+        for ((index, page) in pages.withIndex()) {
+            if (!lockedAtStart && ui.privacyWhileLocked && phoneLocked()) return false
+            if (state.value.connection != ConnectionState.READY) return false
+            val deliveryKey = if (pages.size == 1) message.deliveryKey else {
+                "${message.deliveryKey.length}:${message.deliveryKey}:${index + 1}/${pages.size}"
+            }
+            val completed = when (ui.mode) {
+                CompanionMode.SIMULATOR -> simulate(
+                    message.copy(title = page.title, body = page.text, deliveryKey = deliveryKey),
+                    ProtocolOptions(), 4, false, ui.extendedText,
+                ) != null
+                CompanionMode.CONTROLLER -> BleRuntime.send(deliveryKey, page.title, page.text, message.packageName)
+            }
+            if (!completed) return false
+            personalPagesSent++
+        }
+        return true
     }
 
     private suspend fun deliverTest(test: Synthetic, mode: CompanionMode) {
